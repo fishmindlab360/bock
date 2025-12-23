@@ -224,7 +224,7 @@ impl CgroupManager {
     }
 
     /// Delete the cgroup.
-    pub fn delete(self) -> BockResult<()> {
+    pub fn delete(&self) -> BockResult<()> {
         if self.created && self.path.exists() {
             std::fs::remove_dir(&self.path)?;
             tracing::debug!(

@@ -5,6 +5,7 @@ use bock_common::BockResult;
 /// Health check monitor.
 pub struct HealthMonitor {
     /// Check interval in seconds.
+    #[allow(dead_code)]
     interval: u64,
 }
 

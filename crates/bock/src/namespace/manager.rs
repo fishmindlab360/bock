@@ -1,3 +1,4 @@
+#![allow(unsafe_code)]
 //! Namespace manager.
 
 use bock_common::BockResult;
@@ -5,7 +6,7 @@ use bock_common::BockResult;
 use super::{IdMapping, NamespaceConfig};
 
 /// Manages Linux namespaces for a container.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NamespaceManager {
     config: NamespaceConfig,
     uid_mappings: Vec<IdMapping>,

@@ -31,8 +31,30 @@ impl LayerManager {
 
     /// Extract a layer from a tarball.
     pub fn extract_layer(&self, digest: &str, data: &[u8]) -> BockResult<PathBuf> {
+        let dest = self.layer_path(digest);
+        if dest.exists() {
+            return Ok(dest);
+        }
+
         tracing::debug!(digest, "Extracting layer");
-        // TODO: Implement
-        Ok(self.layer_path(digest))
+
+        std::fs::create_dir_all(&dest).map_err(|e| bock_common::BockError::Io(e))?;
+
+        // Detect compression
+        let reader: Box<dyn std::io::Read> = if data.starts_with(&[0x1f, 0x8b]) {
+            Box::new(flate2::read::GzDecoder::new(data))
+        } else if data.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+            Box::new(zstd::stream::read::Decoder::new(data).map_err(|e| bock_common::BockError::Io(e))?)
+        } else {
+            Box::new(data)
+        };
+
+        let mut archive = tar::Archive::new(reader);
+        archive.set_preserve_permissions(true);
+        archive.set_unpack_xattrs(true);
+
+        archive.unpack(&dest).map_err(|e| bock_common::BockError::Io(e))?;
+
+        Ok(dest)
     }
 }

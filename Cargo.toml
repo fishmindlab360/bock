@@ -7,7 +7,7 @@ members = [
     "crates/bock-oci",     # OCI specs
     "crates/bock-image",   # Image management
     "crates/bock-network", # Network primitives
-    "crates/bock-common",  # Shared utilities
+    "crates/bock-common", "crates/bockd",  # Shared utilities
 ]
 
 [workspace.package]

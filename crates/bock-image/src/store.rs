@@ -7,6 +7,7 @@ use bock_common::BockResult;
 /// Local image store.
 pub struct ImageStore {
     /// Storage root directory.
+    #[allow(dead_code)]
     root: PathBuf,
 }
 

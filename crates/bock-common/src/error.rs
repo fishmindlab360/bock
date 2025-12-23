@@ -1,3 +1,4 @@
+#![allow(unused_assignments)]
 //! Common error types for the Bock ecosystem.
 
 use miette::Diagnostic;
@@ -8,12 +9,14 @@ pub type BockResult<T> = Result<T, BockError>;
 
 /// Common errors across the Bock ecosystem.
 #[derive(Error, Diagnostic, Debug)]
+#[allow(unused_assignments, dead_code)]
 pub enum BockError {
     /// Container not found.
     #[error("Container not found: {id}")]
     #[diagnostic(code(bock::container::not_found))]
     ContainerNotFound {
         /// The container ID that was not found.
+        #[allow(unused)]
         id: String,
     },
 
@@ -33,6 +36,7 @@ pub enum BockError {
     )]
     InvalidContainerId {
         /// The invalid container ID.
+        #[allow(unused_assignments)]
         id: String,
     },
 
@@ -44,6 +48,7 @@ pub enum BockError {
     )]
     InvalidResourceQuantity {
         /// The invalid value.
+        #[allow(unused)]
         value: String,
     },
 
@@ -65,6 +70,7 @@ pub enum BockError {
     )]
     PermissionDenied {
         /// The operation that was denied.
+        #[allow(unused)]
         operation: String,
     },
 
@@ -76,6 +82,7 @@ pub enum BockError {
     )]
     Unsupported {
         /// The unsupported feature.
+        #[allow(unused)]
         feature: String,
     },
 
@@ -83,6 +90,22 @@ pub enum BockError {
     #[error("Configuration error: {message}")]
     #[diagnostic(code(bock::config))]
     Config {
+        /// The error message.
+        message: String,
+    },
+
+    /// Network error.
+    #[error("Network error: {message}")]
+    #[diagnostic(code(bock::network))]
+    Network {
+        /// The error message.
+        message: String,
+    },
+
+    /// Registry error.
+    #[error("Registry error: {message}")]
+    #[diagnostic(code(bock::registry), help("Check your credentials and connectivity"))]
+    Registry {
         /// The error message.
         message: String,
     },

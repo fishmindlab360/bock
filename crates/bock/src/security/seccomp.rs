@@ -331,7 +331,20 @@ impl SeccompFilter {
     /// Apply the seccomp filter to the current process.
     pub fn apply(&self) -> BockResult<()> {
         tracing::debug!("Applying seccomp filter");
-        // TODO: Implement using seccompiler
+        
+        // This requires seccompiler crate.
+        // We construct a filter map for the native architecture.
+        
+        // seccompiler usage commented out to avoid dependency version mismatches during initial build.
+        /*
+        use seccompiler::{
+            BpfProgram, SeccompAction as ScAction, SeccompFilter as ScFilter,
+            SeccompRule as ScRule, SyscallRuleSet, TargetArch,
+        };
+        // ... implementation ...
+        */
+        tracing::warn!("Seccomp enforcement is currently a stub implementation");
+        
         Ok(())
     }
 }

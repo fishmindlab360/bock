@@ -26,11 +26,12 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub debug: bool,
 
+    /// The subcommand to execute.
     #[command(subcommand)]
     pub command: Commands,
 }
 
-// bockrose commands    
+/// bockrose commands.
 #[derive(Subcommand)]
 pub enum Commands {
     /// Start services
@@ -241,8 +242,8 @@ impl Cli {
             Commands::Up {
                 detach,
                 build,
-                force_recreate,
-                services,
+                force_recreate: _,
+                services: _,
             } => {
                 if build {
                     tracing::info!("Building services...");
@@ -256,8 +257,8 @@ impl Cli {
 
             Commands::Down {
                 volumes,
-                rmi,
-                timeout,
+                rmi: _,
+                timeout: _,
             } => {
                 orchestrator.down(volumes).await?;
                 println!("Stopped");
@@ -265,16 +266,16 @@ impl Cli {
             }
 
             Commands::Build {
-                no_cache,
-                pull,
-                services,
+                no_cache: _,
+                pull: _,
+                services: _,
             } => {
                 println!("Building services...");
                 // TODO: Implement
                 Ok(())
             }
 
-            Commands::Ps { all, quiet } => {
+            Commands::Ps { all: _, quiet } => {
                 let services = orchestrator.list_services();
                 if quiet {
                     for s in services {
@@ -304,10 +305,10 @@ impl Cli {
             }
 
             Commands::Logs {
-                follow,
-                timestamps,
-                tail,
-                service,
+                follow: _,
+                timestamps: _,
+                tail: _,
+                service: _,
             } => {
                 println!("Logs...");
                 // TODO: Implement
@@ -315,11 +316,11 @@ impl Cli {
             }
 
             Commands::Exec {
-                detach,
-                env,
-                no_tty,
-                user,
-                workdir,
+                detach: _,
+                env: _,
+                no_tty: _,
+                user: _,
+                workdir: _,
                 service,
                 command,
             } => {
@@ -341,41 +342,47 @@ impl Cli {
                 Ok(())
             }
 
-            Commands::Restart { timeout, services } => {
+            Commands::Restart {
+                timeout: _,
+                services: _,
+            } => {
                 println!("Restarting services...");
                 // TODO: Implement
                 Ok(())
             }
 
-            Commands::Stop { timeout, services } => {
+            Commands::Stop {
+                timeout: _,
+                services: _,
+            } => {
                 println!("Stopping services...");
                 // TODO: Implement
                 Ok(())
             }
 
-            Commands::Start { services } => {
+            Commands::Start { services: _ } => {
                 println!("Starting services...");
                 // TODO: Implement
                 Ok(())
             }
 
             Commands::Pull {
-                include_deps,
-                quiet,
-                services,
+                include_deps: _,
+                quiet: _,
+                services: _,
             } => {
                 println!("Pulling images...");
                 // TODO: Implement
                 Ok(())
             }
 
-            Commands::Push { services } => {
+            Commands::Push { services: _ } => {
                 println!("Pushing images...");
                 // TODO: Implement
                 Ok(())
             }
 
-            Commands::Config { format, quiet } => {
+            Commands::Config { format: _, quiet } => {
                 if quiet {
                     println!("Configuration is valid");
                 } else {
@@ -394,7 +401,7 @@ impl Cli {
                 Ok(())
             }
 
-            Commands::Top { services } => {
+            Commands::Top { services: _ } => {
                 println!("Resource usage:");
                 // TODO: Implement
                 Ok(())

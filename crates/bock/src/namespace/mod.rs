@@ -96,6 +96,27 @@ impl NamespaceConfig {
 
         flags
     }
+    /// Create from OCI spec.
+    pub fn from_spec(spec: &bock_oci::Spec) -> Self {
+        let mut config = Self::default();
+
+        if let Some(linux) = &spec.linux {
+            for ns in &linux.namespaces {
+                match ns.ns_type {
+                    NamespaceType::User => config.user = true,
+                    NamespaceType::Pid => config.pid = true,
+                    NamespaceType::Network => config.net = true,
+                    NamespaceType::Mount => config.mount = true,
+                    NamespaceType::Uts => config.uts = true,
+                    NamespaceType::Ipc => config.ipc = true,
+                    NamespaceType::Cgroup => config.cgroup = true,
+                    NamespaceType::Time => {} // Time namespace not yet supported in Bock config struct but defined in OCI
+                }
+            }
+        }
+
+        config
+    }
 }
 
 /// UID/GID mapping for user namespaces.
@@ -125,7 +146,7 @@ impl IdMapping {
     pub fn current_user() -> Self {
         #[cfg(target_os = "linux")]
         {
-            use rustix::process::{getgid, getuid};
+            use rustix::process::getuid;
             Self {
                 container_id: 0,
                 host_id: getuid().as_raw(),

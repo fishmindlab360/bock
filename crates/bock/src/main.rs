@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use color_eyre::eyre::Result;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 use bock::cli::Cli;
 

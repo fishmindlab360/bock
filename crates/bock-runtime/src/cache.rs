@@ -30,7 +30,7 @@ impl CacheManager {
     }
 
     /// Store a layer in cache.
-    pub fn store(&self, key: &str, layer_path: &PathBuf) -> BockResult<()> {
+    pub fn store(&self, key: &str, _layer_path: &PathBuf) -> BockResult<()> {
         tracing::debug!(key, "Storing layer in cache");
         // TODO: Implement
         Ok(())

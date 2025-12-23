@@ -17,10 +17,12 @@ pub struct Cli {
     #[arg(short, long, global = true)]
     pub debug: bool,
 
+    /// Subcommand to execute.
     #[command(subcommand)]
     pub command: Commands,
 }
 
+/// Bock runtime commands.
 #[derive(Subcommand)]
 pub enum Commands {
     /// Build a container image
@@ -71,11 +73,13 @@ pub enum Commands {
 
     /// Manage build cache
     Cache {
+        /// Cache subcommands.
         #[command(subcommand)]
         command: CacheCommands,
     },
 }
 
+/// Build cache management subcommands.
 #[derive(Subcommand)]
 pub enum CacheCommands {
     /// List cached layers
@@ -98,10 +102,10 @@ impl Cli {
                 file,
                 context,
                 tag,
-                args,
-                target,
-                no_cache,
-                pull,
+                args: _,
+                target: _,
+                no_cache: _,
+                pull: _,
             } => {
                 tracing::info!(
                     file = %file.display(),
@@ -112,15 +116,18 @@ impl Cli {
 
                 let bockfile = Bockfile::from_file(&file)?;
                 let tag = tag.unwrap_or_else(|| "latest".to_string());
-                
+
                 let builder = Builder::new(bockfile, context, tag.clone());
                 let digest = builder.build().await?;
-                
+
                 println!("Successfully built {}", digest);
                 Ok(())
             }
 
-            Commands::Push { source, destination } => {
+            Commands::Push {
+                source,
+                destination,
+            } => {
                 tracing::info!(source = %source, destination = %destination, "Pushing image");
                 println!("Pushing {} to {}", source, destination);
                 // TODO: Implement

@@ -12,7 +12,9 @@
 
 pub mod layer;
 pub mod reference;
+/// Image registry client.
 pub mod registry;
+/// Local image store.
 pub mod store;
 
 pub use reference::ImageReference;

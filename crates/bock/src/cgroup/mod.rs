@@ -2,10 +2,8 @@
 //!
 //! This module provides utilities for managing Linux cgroups v2.
 
-mod controllers;
 mod manager;
 
-pub use controllers::*;
 pub use manager::CgroupManager;
 
 /// Cgroup resource configuration.

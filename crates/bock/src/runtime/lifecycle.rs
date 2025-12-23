@@ -32,6 +32,7 @@ pub trait ContainerLifecycle {
 
 /// Container lifecycle phases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum LifecyclePhase {
     /// Setting up namespaces.
     Namespaces,

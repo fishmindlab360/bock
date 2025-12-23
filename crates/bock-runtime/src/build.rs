@@ -9,8 +9,10 @@ use crate::bockfile::Bockfile;
 /// Image builder.
 pub struct Builder {
     /// Bockfile specification.
+    #[allow(dead_code)]
     bockfile: Bockfile,
     /// Build context directory.
+    #[allow(dead_code)]
     context: PathBuf,
     /// Target tag.
     tag: String,

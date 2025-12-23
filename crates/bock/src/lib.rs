@@ -38,7 +38,7 @@ pub mod cli;
 pub mod exec;
 pub mod filesystem;
 pub mod namespace;
-pub mod network;
+
 pub mod runtime;
 pub mod security;
 

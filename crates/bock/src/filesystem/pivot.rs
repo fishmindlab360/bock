@@ -1,3 +1,4 @@
+#![allow(unsafe_code)]
 //! pivot_root implementation.
 
 use std::path::Path;
@@ -19,32 +20,29 @@ pub fn pivot_root(new_root: &Path, put_old: &Path) -> BockResult<()> {
     {
         use std::ffi::CString;
 
-        let new_root_cstr = CString::new(new_root.to_string_lossy().as_bytes()).map_err(|e| {
+        // Safety: We use CString to ensure null termination and lifetime
+        let new_root_c = CString::new(new_root.to_string_lossy().as_bytes()).map_err(|e| {
+            bock_common::BockError::Internal {
+                message: format!("Invalid path: {}", e),
+            }
+        })?;
+        let put_old_c = CString::new(put_old.to_string_lossy().as_bytes()).map_err(|e| {
             bock_common::BockError::Internal {
                 message: format!("Invalid path: {}", e),
             }
         })?;
 
-        let put_old_cstr = CString::new(put_old.to_string_lossy().as_bytes()).map_err(|e| {
-            bock_common::BockError::Internal {
-                message: format!("Invalid path: {}", e),
-            }
-        })?;
-
-        // Safety: pivot_root is a standard Linux syscall
-        let result = unsafe {
+        // Perform pivot_root
+        let ret = unsafe {
             libc::syscall(
                 libc::SYS_pivot_root,
-                new_root_cstr.as_ptr(),
-                put_old_cstr.as_ptr(),
+                new_root_c.as_ptr(),
+                put_old_c.as_ptr(),
             )
         };
 
-        if result != 0 {
-            let err = std::io::Error::last_os_error();
-            return Err(bock_common::BockError::Internal {
-                message: format!("pivot_root failed: {}", err),
-            });
+        if ret != 0 {
+            return Err(bock_common::BockError::Io(std::io::Error::last_os_error()));
         }
 
         tracing::debug!("pivot_root successful");
@@ -57,34 +55,4 @@ pub fn pivot_root(new_root: &Path, put_old: &Path) -> BockResult<()> {
             feature: "pivot_root".to_string(),
         })
     }
-}
-
-/// Cleanup old root after pivot_root.
-///
-/// This unmounts and removes the old root directory.
-pub fn cleanup_old_root(old_root: &Path) -> BockResult<()> {
-    tracing::debug!(old_root = %old_root.display(), "Cleaning up old root");
-
-    // Unmount recursively
-    #[cfg(target_os = "linux")]
-    {
-        let result = unsafe {
-            libc::umount2(
-                old_root.to_string_lossy().as_ptr() as *const libc::c_char,
-                libc::MNT_DETACH,
-            )
-        };
-
-        if result != 0 {
-            tracing::warn!(
-                "Failed to unmount old root: {}",
-                std::io::Error::last_os_error()
-            );
-        }
-    }
-
-    // Remove the directory
-    let _ = std::fs::remove_dir_all(old_root);
-
-    Ok(())
 }
