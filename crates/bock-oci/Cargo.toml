@@ -1,0 +1,20 @@
+[package]
+name = "bock-oci"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OCI runtime and image specification types for Bock"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+bock-common = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

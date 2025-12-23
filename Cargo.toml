@@ -1,0 +1,142 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/bock",         # Container runtime
+    "crates/bock-runtime", # Image builder
+    "crates/bockrose",     # Multi-container orchestration
+    "crates/bock-oci",     # OCI specs
+    "crates/bock-image",   # Image management
+    "crates/bock-network", # Network primitives
+    "crates/bock-common",  # Shared utilities
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Bock Contributors"]
+license = "Apache-2.0 OR MIT"
+rust-version = "1.85"
+repository = "https://github.com/bock-containers/bock"
+description = "Modern container ecosystem built in Rust"
+keywords = ["containers", "docker", "runtime", "orchestration"]
+categories = ["command-line-utilities", "development-tools", "virtualization"]
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.42", features = ["full", "tracing"] }
+tokio-stream = "0.1"
+async-trait = "0.1"
+futures = "0.3"
+
+# Linux syscalls (modern, safer alternative to nix)
+rustix = { version = "1.1.3", features = [
+    "fs",
+    "process",
+    "thread",
+    "mount",
+    "net",
+    "pipe",
+    "pty",
+    "termios",
+    "mm",
+    "event",
+] }
+caps = "0.5"
+seccompiler = "0.5"
+
+# Serialization
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.9"
+
+# Networking
+netlink-packet-core = "0.8.1"
+netlink-packet-route = "0.26"
+netlink-sys = "0.8"
+rtnetlink = "0.19"
+
+# HTTP/Registry
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"] }
+oci-spec = "0.8.4"
+
+# Compression
+tar = "0.4"
+zstd = "0.13"
+flate2 = "1.0"
+
+# Crypto
+sha2 = "0.10"
+hex = "0.4"
+digest = "0.10"
+
+# CLI
+clap = { version = "4.5", features = [
+    "derive",
+    "env",
+    "unicode",
+    "string",
+    "wrap_help",
+] }
+clap_complete = "4.5"
+
+# Logging & tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# Error handling
+thiserror = "2.0"
+miette = { version = "7.4", features = ["fancy"] }
+color-eyre = "0.6"
+
+# Utils
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tempfile = "3.14"
+dirs = "6.0"
+walkdir = "2.5"
+glob = "0.3"
+regex = "1.11"
+once_cell = "1.20"
+parking_lot = "0.12"
+dashmap = "6.1"
+crossbeam-channel = "0.5"
+bytes = "1.9"
+memmap2 = "0.9"
+indicatif = "0.18"
+console = "0.16"
+dialoguer = "0.12"
+tabled = "0.20"
+
+# Testing
+insta = { version = "1.41", features = ["yaml"] }
+proptest = "1.5"
+criterion = { version = "0.8.1", features = ["async_tokio"] }
+assert_cmd = "2.0"
+predicates = "3.1"
+test-log = { version = "0.2", features = ["trace"] }
+
+# Internal crates
+bock-common = { path = "crates/bock-common" }
+bock-oci = { path = "crates/bock-oci" }
+bock-image = { path = "crates/bock-image" }
+bock-network = { path = "crates/bock-network" }
+bock = { path = "crates/bock" }
+bock-runtime = { path = "crates/bock-runtime" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+split-debuginfo = "unpacked"

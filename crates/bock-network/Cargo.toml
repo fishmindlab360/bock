@@ -1,0 +1,24 @@
+[package]
+name = "bock-network"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Networking primitives for Bock containers"
+
+[lints]
+workspace = true
+
+[dependencies]
+bock-common = { workspace = true }
+
+tokio = { workspace = true }
+rtnetlink = { workspace = true }
+netlink-packet-route = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

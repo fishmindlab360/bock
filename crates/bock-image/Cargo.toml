@@ -1,0 +1,34 @@
+[package]
+name = "bock-image"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Container image management for Bock"
+
+[lints]
+workspace = true
+
+[dependencies]
+bock-common = { workspace = true }
+bock-oci = { workspace = true }
+
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+zstd = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
