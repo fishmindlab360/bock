@@ -12,21 +12,22 @@
 //! ## Usage
 //!
 //! ```no_run
-//! use bock::runtime::Container;
+//! use bock::runtime::{Container, RuntimeConfig};
 //! use bock_oci::Spec;
 //!
 //! # async fn example() -> bock_common::BockResult<()> {
 //! // Load OCI spec
 //! let spec = Spec::default();
+//! let config = RuntimeConfig::default();
 //!
-//! // Create container
-//! let container = Container::create("my-container", &spec).await?;
+//! // Create container with bundle path and config
+//! let container = Container::create("my-container", "/path/to/bundle", &spec, config).await?;
 //!
 //! // Start container
 //! container.start().await?;
 //!
-//! // Wait for exit
-//! let exit_code = container.wait().await?;
+//! // Kill container (e.g., with SIGTERM)
+//! container.kill(15).await?;
 //! # Ok(())
 //! # }
 //! ```

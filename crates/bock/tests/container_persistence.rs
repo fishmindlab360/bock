@@ -36,7 +36,7 @@ async fn test_pid_persistence() -> Result<(), Box<dyn Error>> {
     std::fs::write(container_dir.join("pid"), "12345")?;
 
     // Reload container (simulate CLI restart)
-    let loaded_container = Container::load(id, config).await?;
+    let loaded_container = Container::load(id, config.clone()).await?;
 
     // But wait, 'load' just loads state. It does NOT automatically read PID file into memory.
     // The `pid()` method or `kill()` method reads it lazily?

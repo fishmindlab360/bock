@@ -328,7 +328,8 @@ impl Container {
         drop(state);
 
         // Try to get PID from memory first, then file
-        let pid = match *self.pid.lock().await {
+        let mut pid_guard = self.pid.lock().await;
+        let pid = match *pid_guard {
             Some(pid) => pid,
             None => {
                 let container_dir = self.config.paths.container(self.id.as_str());
@@ -344,7 +345,7 @@ impl Container {
                             message: "Invalid PID in PID file".to_string(),
                         }
                     })?;
-                    *self.pid.lock().await = Some(pid);
+                    *pid_guard = Some(pid);
                     pid
                 } else {
                     return Err(bock_common::BockError::Config {
@@ -353,6 +354,7 @@ impl Container {
                 }
             }
         };
+        drop(pid_guard);
 
         unsafe {
             if libc::kill(pid as i32, signal) != 0 {
