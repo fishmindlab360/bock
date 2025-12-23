@@ -23,7 +23,7 @@ pub struct Cli {
     pub project_name: Option<String>,
 
     /// Enable debug logging
-    #[arg(short, long, global = true)]
+    #[arg(long, global = true)]
     pub debug: bool,
 
     /// The subcommand to execute.

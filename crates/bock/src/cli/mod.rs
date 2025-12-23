@@ -21,7 +21,7 @@ pub struct Cli {
     pub root: PathBuf,
 
     /// Enable debug logging
-    #[arg(short, long, global = true)]
+    #[arg(long, global = true)]
     pub debug: bool,
 
     /// The subcommand to execute.

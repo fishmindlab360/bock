@@ -416,12 +416,26 @@ mod tests {
 
     #[tokio::test]
     async fn create_container() {
+        let temp = tempfile::tempdir().expect("Failed to create temp dir");
+        let bundle_path = temp.path().join("bundle");
+        let rootfs = bundle_path.join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+
         let spec = Spec::default();
+        std::fs::write(
+            bundle_path.join("config.json"),
+            serde_json::to_string(&spec).unwrap(),
+        )
+        .unwrap();
+
+        let root = temp.path().join("root");
+        let config = RuntimeConfig::default().with_root(root);
+
         let container = Container::create(
             "test-container",
-            "/tmp/bundle",
+            bundle_path.to_str().unwrap(),
             &spec,
-            RuntimeConfig::default(),
+            config,
         )
         .await
         .unwrap();

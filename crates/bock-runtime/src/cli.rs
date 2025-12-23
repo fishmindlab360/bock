@@ -14,7 +14,7 @@ use crate::build::Builder;
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// Enable debug logging
-    #[arg(short, long, global = true)]
+    #[arg(long, global = true)]
     pub debug: bool,
 
     /// Subcommand to execute.
