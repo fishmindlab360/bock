@@ -311,16 +311,18 @@ impl Cli {
             }
 
             Commands::Logs {
-                follow: _,
+                follow,
                 timestamps: _,
-                tail: _,
+                tail,
                 service,
             } => {
-                // TODO: Implement real logging
+                orchestrator.refresh_state().await?;
                 if let Some(s) = service {
-                    println!("Logs for {}: (Not fully implemented, check stdio)", s);
+                    orchestrator
+                        .logs(&s, follow, tail.unwrap_or(0) as usize)
+                        .await?;
                 } else {
-                    println!("Logs: (Specify service)");
+                    println!("Please specify a service name");
                 }
                 Ok(())
             }

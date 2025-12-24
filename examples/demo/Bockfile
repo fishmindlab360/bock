@@ -1,0 +1,10 @@
+base:
+  from: alpine:3.19
+
+stages:
+  - name: build
+    commands:
+      - run: echo "Hello from Bock!"
+
+runtime:
+  cmd: ["sh", "-c", "while true; do echo 'Running...'; sleep 5; done"]

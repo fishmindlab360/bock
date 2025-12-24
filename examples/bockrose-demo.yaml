@@ -1,14 +1,6 @@
 version: "1"
 services:
   web:
-    image: nginx:latest
+    build: ./demo
     deploy:
       replicas: 2
-    ports: # Note: Ports not fully implemented in bockrose yet, but spec allows it
-      - "8080:80"
-  db:
-    image: redis:alpine
-    volumes:
-      - db_data:/data
-volumes:
-  db_data:

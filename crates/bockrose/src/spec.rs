@@ -30,6 +30,10 @@ pub struct BockoseSpec {
 
     /// Services.
     pub services: HashMap<String, ServiceSpec>,
+
+    /// Base path (directory containing the spec file).
+    #[serde(skip)]
+    pub base_path: PathBuf,
 }
 
 fn default_version() -> String {
@@ -271,7 +275,9 @@ impl BockoseSpec {
     /// Parse from file.
     pub fn from_file(path: &PathBuf) -> Result<Self, BockoseSpecError> {
         let content = std::fs::read_to_string(path).map_err(|e| BockoseSpecError::Io(e))?;
-        Self::from_yaml(&content).map_err(|e| BockoseSpecError::Parse(e))
+        let mut spec = Self::from_yaml(&content).map_err(|e| BockoseSpecError::Parse(e))?;
+        spec.base_path = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        Ok(spec)
     }
 
     /// Get the stack name.

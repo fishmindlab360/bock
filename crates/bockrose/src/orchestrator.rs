@@ -13,6 +13,24 @@ use bock_oci::runtime::{Mount, Spec};
 use bock_oci::state::ContainerStatus;
 use bock_runtime::{Bockfile, Builder};
 
+/// Recursively copy a directory.
+fn copy_dir_all(
+    src: impl AsRef<std::path::Path>,
+    dst: impl AsRef<std::path::Path>,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(&dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        } else {
+            std::fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Service state.
 #[derive(Debug, Clone)]
 pub struct ServiceState {
@@ -196,7 +214,7 @@ impl Orchestrator {
             .insert(name.to_string(), ServiceState::new(name));
 
         // 1. Ensure image is available
-        let image_ref = self.ensure_image(name, service_spec).await?;
+        let (image_ref, built_rootfs) = self.ensure_image(name, service_spec).await?;
         tracing::debug!(service = %name, image = %image_ref, "Image ready");
 
         // 2. Prepare container(s)
@@ -296,17 +314,20 @@ impl Orchestrator {
             })?;
             std::fs::write(bundle_path.join("config.json"), &config_json)?;
 
-            // 3. Extract rootfs (Should ideally be done once and shared/copied, but for simplicity extract again or hardlink?)
-            // Extracting again for now. Optimization: OverlayFS.
-            // 3. Extract rootfs
-            tracing::info!("Extracting image layers...");
-            let image = self.image_store.get(&image_ref)?.ok_or_else(|| {
-                bock_common::BockError::Internal {
-                    message: format!("Image {} missing after ensure_image", image_ref),
-                }
-            })?;
+            // 3. Extract rootfs or copy from built image
             let rootfs = bundle_path.join("rootfs");
-            self.image_store.extract_layers(&image, &rootfs)?;
+            if let Some(ref built_path) = built_rootfs {
+                tracing::info!("Copying built rootfs...");
+                copy_dir_all(built_path, &rootfs)?;
+            } else {
+                tracing::info!("Extracting image layers...");
+                let image = self.image_store.get(&image_ref)?.ok_or_else(|| {
+                    bock_common::BockError::Internal {
+                        message: format!("Image {} missing after ensure_image", image_ref),
+                    }
+                })?;
+                self.image_store.extract_layers(&image, &rootfs)?;
+            }
 
             // 5. Create Container
             tracing::info!(container = %container_name, "Creating container");
@@ -346,6 +367,7 @@ impl Orchestrator {
                     // Add other replicas of self?
                     // They might not be started yet if we are in loop.
                     // Service Discovery usually only knows about *already started* services in this simple model.
+                    tracing::warn!(service = %name, "Adding other replicas of self not implemented");
                 }
             }
 
@@ -368,17 +390,30 @@ impl Orchestrator {
     }
 
     /// Ensure image exists (build or pull).
+    /// Returns (image_ref, Option<rootfs_path>) - rootfs_path is set for built images.
     async fn ensure_image(
         &self,
         name: &str,
         spec: &crate::spec::ServiceSpec,
-    ) -> BockResult<String> {
+    ) -> BockResult<(String, Option<PathBuf>)> {
         if let Some(build_config) = &spec.build {
             tracing::info!(service = %name, "Building image...");
             let (context_path, dockerfile_path) = match build_config {
-                crate::spec::BuildConfig::Path(p) => (PathBuf::from(p), None),
+                crate::spec::BuildConfig::Path(p) => {
+                    let ctx = if PathBuf::from(p).is_absolute() {
+                        PathBuf::from(p)
+                    } else {
+                        self.spec.base_path.join(p)
+                    };
+                    (ctx, None)
+                }
                 crate::spec::BuildConfig::Full { context, file, .. } => {
-                    (PathBuf::from(context), file.as_ref().map(PathBuf::from))
+                    let ctx = if PathBuf::from(context).is_absolute() {
+                        PathBuf::from(context)
+                    } else {
+                        self.spec.base_path.join(context)
+                    };
+                    (ctx, file.as_ref().map(PathBuf::from))
                 }
             };
 
@@ -392,23 +427,20 @@ impl Orchestrator {
                 context_path.join("Bockfile")
             };
 
+            tracing::info!(bockfile_path = %bockfile_path.display(), context = %context_path.display(), base = %self.spec.base_path.display(), "Resolved build paths");
+
             let bockfile = Bockfile::from_file(&bockfile_path)?;
             let tag = spec
                 .image
                 .clone()
                 .unwrap_or_else(|| format!("{}:latest", name));
 
-            let options = bock_runtime::build::BuildOptions::default(); // TODO: Map build args
+            let options = bock_runtime::build::BuildOptions::default();
             let builder = Builder::with_options(bockfile, context_path, tag.clone(), options);
 
-            // Build
             let built = builder.build().await?;
-            // For now assume image store is updated or we just use tag if shared root (bock-runtime and bock-rose sharing same bock-image might need coordination if image store is not lock-safe or updated implicitly).
-            // Bock-runtime writes OCI struct to disk. We need to ingest it.
-            // Assume integration for now: bock-runtime SHOULD save to store.
-            // But bock-runtime currently DOES NOT save to store in `build.rs` I viewed. It just creates OCI filesystem struct.
-            // We need to implement ingestion or update Bock-runtime to save.
-            Ok(built.tag)
+            tracing::info!(tag = %built.tag, rootfs = %built.rootfs_path.display(), "Image built");
+            Ok((built.tag, Some(built.rootfs_path)))
         } else if let Some(image) = &spec.image {
             tracing::info!(service = %name, image = %image, "Checking/Pulling image...");
             if self.image_store.get(image)?.is_none() {
@@ -418,7 +450,7 @@ impl Orchestrator {
                     message: format!("Image {} not found locally (pull not implemented)", image),
                 });
             }
-            Ok(image.clone())
+            Ok((image.clone(), None))
         } else {
             Err(bock_common::BockError::Config {
                 message: format!("Service {} has no build or image config", name),
@@ -584,7 +616,7 @@ impl Orchestrator {
         replicas: u32,
         service_spec: &crate::spec::ServiceSpec,
     ) -> BockResult<()> {
-        let image_ref = self.ensure_image(name, service_spec).await?;
+        let (image_ref, built_rootfs) = self.ensure_image(name, service_spec).await?;
 
         // Copied loop from start_service but with explicit 'replicas' count
         let mut spec = Spec::default();
@@ -658,10 +690,14 @@ impl Orchestrator {
             })?;
             std::fs::write(bundle_path.join("config.json"), &config_json)?;
 
-            // Extract layers
-            let image = self.image_store.get(&image_ref)?.unwrap();
+            // Extract layers or copy built rootfs
             let rootfs = bundle_path.join("rootfs");
-            self.image_store.extract_layers(&image, &rootfs)?;
+            if let Some(ref built_path) = built_rootfs {
+                copy_dir_all(built_path, &rootfs)?;
+            } else {
+                let image = self.image_store.get(&image_ref)?.unwrap();
+                self.image_store.extract_layers(&image, &rootfs)?;
+            }
 
             // Create
             let mut container =
@@ -944,5 +980,55 @@ impl Orchestrator {
             }
         }
         Ok(stats)
+    }
+
+    /// Get log path for a service (first container).
+    pub fn get_log_path(&self, name: &str) -> Option<PathBuf> {
+        if let Some(state) = self.services.get(name) {
+            if let Some(cid) = state.containers.first() {
+                return Some(self.config.paths.container(cid).join("stdout.log"));
+            }
+        }
+        None
+    }
+
+    /// Stream logs to stdout.
+    pub async fn logs(&self, name: &str, follow: bool, _tail: usize) -> BockResult<()> {
+        use tokio::io::AsyncBufReadExt;
+
+        let path = self
+            .get_log_path(name)
+            .ok_or_else(|| bock_common::BockError::Config {
+                message: format!("Service {} has no running containers", name),
+            })?;
+
+        if !path.exists() {
+            return Err(bock_common::BockError::Config {
+                message: format!("Log file not found: {}", path.display()),
+            });
+        }
+
+        let file = tokio::fs::File::open(&path)
+            .await
+            .map_err(|e| bock_common::BockError::Io(e))?;
+        let mut reader = tokio::io::BufReader::new(file);
+        let mut line = String::new();
+
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) => {
+                    if !follow {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Ok(_) => {
+                    print!("{}", line);
+                }
+                Err(_) => break,
+            }
+        }
+        Ok(())
     }
 }

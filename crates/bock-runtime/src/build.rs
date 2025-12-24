@@ -37,6 +37,8 @@ pub struct BuiltImage {
     pub layers: usize,
     /// Total size in bytes.
     pub size: u64,
+    /// Path to the built rootfs (caller must clean up).
+    pub rootfs_path: PathBuf,
 }
 
 /// Build options.
@@ -170,11 +172,16 @@ impl Builder {
             "Image built successfully"
         );
 
+        // Keep the build directory - caller is responsible for cleanup
+        let rootfs_path = rootfs.clone();
+        std::mem::forget(build_dir); // Prevent cleanup
+
         Ok(BuiltImage {
             digest,
             tag: self.tag.clone(),
             layers: layers.len(),
             size,
+            rootfs_path,
         })
     }
 
