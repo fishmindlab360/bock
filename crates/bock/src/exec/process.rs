@@ -4,10 +4,16 @@
 use bock_common::BockResult;
 
 use std::os::unix::process::CommandExt;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Spawn a new process with container setup.
-pub fn spawn_process<F>(args: &[String], env: &[(String, String)], setup: F) -> BockResult<u32>
+pub fn spawn_process<F>(
+    args: &[String],
+    env: &[(String, String)],
+    stdout: Option<Stdio>,
+    stderr: Option<Stdio>,
+    setup: F,
+) -> BockResult<u32>
 where
     F: Fn() -> std::io::Result<()> + Send + Sync + 'static,
 {
@@ -22,6 +28,18 @@ where
     let mut cmd = Command::new(&args[0]);
     cmd.args(&args[1..]);
     cmd.envs(env.iter().cloned());
+
+    if let Some(out) = stdout {
+        cmd.stdout(out);
+    } else {
+        cmd.stdout(Stdio::null()); // Default to dev null if not provided
+    }
+
+    if let Some(err) = stderr {
+        cmd.stderr(err);
+    } else {
+        cmd.stderr(Stdio::null());
+    }
 
     unsafe {
         cmd.pre_exec(setup);

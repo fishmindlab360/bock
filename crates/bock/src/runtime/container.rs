@@ -16,6 +16,7 @@ use bock_network::VethPair;
 
 use super::config::RuntimeConfig;
 use super::state::StateManager;
+use crate::runtime::RuntimeEvent;
 
 use std::ffi::CString;
 
@@ -152,7 +153,28 @@ pub struct Container {
     /// Process ID of the container init process.
     pid: Arc<Mutex<Option<u32>>>,
     /// Bundle path.
+    /// Bundle path.
     bundle: PathBuf,
+    /// Network configuration.
+    network_config: Option<NetworkConfig>,
+}
+
+/// Network configuration for the container.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct NetworkConfig {
+    /// IP address (CIDR format, e.g., "172.16.0.2/24").
+    pub ip: String,
+    /// Gateway address (e.g., "172.16.0.1").
+    pub gateway: String,
+}
+
+/// Container statistics.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ContainerStats {
+    /// CPU usage in microseconds.
+    pub cpu_usage_usec: u64,
+    /// Memory usage in bytes.
+    pub memory_usage_bytes: u64,
 }
 
 impl Container {
@@ -208,7 +230,7 @@ impl Container {
             Err(e) => return Err(e),
         };
 
-        Ok(Self {
+        let container = Self {
             id,
             spec: spec.clone(),
             config,
@@ -219,7 +241,18 @@ impl Container {
             )),
             pid: Arc::new(Mutex::new(None)),
             bundle,
-        })
+            network_config: None,
+        };
+
+        container
+            .config
+            .event_bus
+            .publish(RuntimeEvent::ContainerCreated {
+                id: container.id.to_string(),
+                timestamp: chrono::Utc::now().timestamp(),
+            });
+
+        Ok(container)
     }
 
     /// Load a container from state.
@@ -241,6 +274,18 @@ impl Container {
 
         let id = ContainerId::new(state.id.clone())?;
 
+        // Load network config if present
+        let network_config = {
+            let container_dir = config.paths.container(state.id.as_str());
+            let path = container_dir.join("network.json");
+            if path.exists() {
+                let json = std::fs::read_to_string(path)?;
+                Some(serde_json::from_str(&json)?)
+            } else {
+                None
+            }
+        };
+
         Ok(Self {
             id,
             spec: spec.clone(),
@@ -252,6 +297,7 @@ impl Container {
             )),
             pid: Arc::new(Mutex::new(None)),
             bundle,
+            network_config,
         })
     }
 
@@ -280,6 +326,22 @@ impl Container {
         self.state.read().status
     }
 
+    /// Get container statistics.
+    pub fn stats(&self) -> BockResult<ContainerStats> {
+        if let Some(cgroup) = &self.cgroup {
+            let cpu = cgroup.cpu_stats()?;
+            let memory = cgroup.memory_usage()?;
+            Ok(ContainerStats {
+                cpu_usage_usec: cpu.usage_usec,
+                memory_usage_bytes: memory,
+            })
+        } else {
+            Err(bock_common::BockError::Config {
+                message: "No cgroup manager available".to_string(),
+            })
+        }
+    }
+
     /// Get the container PID.
     pub async fn pid(&self) -> Option<u32> {
         // Reload PID from somewhere? currently just memory.
@@ -288,15 +350,17 @@ impl Container {
 
     /// Start the container.
     pub async fn start(&self) -> BockResult<()> {
-        let mut state = self.state.write();
-
-        if !state.status.can_start() {
-            return Err(bock_common::BockError::Config {
-                message: format!(
-                    "Container {} cannot be started (status: {})",
-                    self.id, state.status
-                ),
-            });
+        // Check status first with scoped lock
+        {
+            let state = self.state.read();
+            if !state.status.can_start() {
+                return Err(bock_common::BockError::Config {
+                    message: format!(
+                        "Container {} cannot be started (status: {})",
+                        self.id, state.status
+                    ),
+                });
+            }
         }
 
         tracing::info!(container_id = %self.id, "Starting container");
@@ -322,7 +386,6 @@ impl Container {
         let rootfs = self.bundle.join("rootfs");
 
         // Create synchronization pipes
-        // Using rustix::pipe::pipe() which returns Result<(OwnedFd, OwnedFd), Errno>
         let (parent_read, child_write) =
             rustix::pipe::pipe().map_err(|e| bock_common::BockError::Internal {
                 message: e.to_string(),
@@ -335,44 +398,63 @@ impl Container {
         let rootfs_clone = rootfs.clone();
         let ns_manager = self.namespace.clone();
 
-        // Convert to RawFd for closure capture (OwnedFd is not Copy)
+        // Convert to RawFd for closure capture
         use rustix::fd::AsRawFd;
         let c_read_fd = child_read.as_raw_fd();
         let c_write_fd = child_write.as_raw_fd();
 
+        // Prepare log files
+        let container_dir = self.config.paths.container(self.id.as_str());
+        let stdout_path = container_dir.join("stdout.log");
+        let stderr_path = container_dir.join("stderr.log");
+
+        let stdout_file =
+            std::fs::File::create(&stdout_path).map_err(|e| bock_common::BockError::Io(e))?;
+        let stderr_file =
+            std::fs::File::create(&stderr_path).map_err(|e| bock_common::BockError::Io(e))?;
+
+        let stdout = std::process::Stdio::from(stdout_file);
+        let stderr = std::process::Stdio::from(stderr_file);
+
         // Spawn process with setup hook
-        let pid = crate::exec::process::spawn_process(&args, &env, move || {
-            use std::io::{Read, Write};
-            use std::os::unix::io::FromRawFd;
+        let pid = crate::exec::process::spawn_process(
+            &args,
+            &env,
+            Some(stdout),
+            Some(stderr),
+            move || {
+                use std::io::{Read, Write};
+                use std::os::unix::io::FromRawFd;
 
-            // Reconstruct pipes from raw fds (using RawFd i32)
-            let mut c_read = unsafe { std::fs::File::from_raw_fd(c_read_fd) };
-            let mut c_write = unsafe { std::fs::File::from_raw_fd(c_write_fd) };
+                let mut c_read = unsafe { std::fs::File::from_raw_fd(c_read_fd) };
+                let mut c_write = unsafe { std::fs::File::from_raw_fd(c_write_fd) };
 
-            // 1. Unshare namespaces
-            if let Some(ns) = &ns_manager {
-                ns.unshare()
+                // 1. Unshare namespaces
+                if let Some(ns) = &ns_manager {
+                    ns.unshare().map_err(|e| {
+                        std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                    })?;
+                }
+
+                // 2. Signal parent "Unshared"
+                c_write.write_all(b"UNSHARED")?;
+
+                // 3. Wait for parent "Mappings Written"
+                let mut buf = [0u8; 4];
+                c_read.read_exact(&mut buf)?;
+
+                // 4. Pivot root
+                let old_root = rootfs_clone.join(".pivot_root");
+                if !old_root.exists() {
+                    std::fs::create_dir(&old_root)?;
+                }
+
+                crate::filesystem::pivot_root(&rootfs_clone, &old_root)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-            }
 
-            // 2. Signal parent "Unshared"
-            c_write.write_all(b"UNSHARED")?;
-
-            // 3. Wait for parent "Mappings Written"
-            let mut buf = [0u8; 4];
-            c_read.read_exact(&mut buf)?;
-
-            // 4. Pivot root
-            let old_root = rootfs_clone.join(".pivot_root");
-            if !old_root.exists() {
-                std::fs::create_dir(&old_root)?;
-            }
-
-            crate::filesystem::pivot_root(&rootfs_clone, &old_root)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
 
         // Parent logic
         use rustix::fd::IntoRawFd;
@@ -395,7 +477,7 @@ impl Container {
             ns.write_gid_map(pid)?;
         }
 
-        // Network set up
+        // Network set up (no locks held during await)
         let host_if = format!(
             "veth{}",
             &self.id.as_str()[..std::cmp::min(6, self.id.as_str().len())]
@@ -406,6 +488,47 @@ impl Container {
         );
         let veth = VethPair::create(&host_if, &guest_if).await?;
         veth.move_to_netns(pid).await?;
+
+        // Configure network if specified
+        if let Some(net_config) = &self.network_config {
+            let pid_str = pid.to_string();
+            tracing::debug!(pid = %pid, ip = %net_config.ip, gateway = %net_config.gateway, "Configuring container network");
+
+            // Helper to run command in container namespace via nsenter
+            let run_in_netns = |args: &[&str]| -> BockResult<()> {
+                let status = std::process::Command::new("nsenter")
+                    .arg("-t")
+                    .arg(&pid_str)
+                    .arg("-n")
+                    .args(args)
+                    .status()
+                    .map_err(|e| bock_common::BockError::Internal {
+                        message: format!("Failed to execute nsenter: {}", e),
+                    })?;
+
+                if !status.success() {
+                    return Err(bock_common::BockError::Internal {
+                        message: format!(
+                            "Command in netns failed: {:?} (status: {})",
+                            args, status
+                        ),
+                    });
+                }
+                Ok(())
+            };
+
+            // 1. Bring up loopback
+            run_in_netns(&["ip", "link", "set", "lo", "up"])?;
+
+            // 2. Bring up guest interface
+            run_in_netns(&["ip", "link", "set", &guest_if, "up"])?;
+
+            // 3. Assign IP address
+            run_in_netns(&["ip", "addr", "add", &net_config.ip, "dev", &guest_if])?;
+
+            // 4. Set default gateway
+            run_in_netns(&["ip", "route", "add", "default", "via", &net_config.gateway])?;
+        }
 
         // Signal child to proceed
         p_write
@@ -418,7 +541,7 @@ impl Container {
         *self.pid.lock().await = Some(pid);
 
         // Save PID to file for persistence
-        let container_dir = self.config.paths.container(self.id.as_str());
+        // container_dir is already defined above
         let pid_path = container_dir.join("pid");
         if let Err(e) = std::fs::write(&pid_path, pid.to_string()) {
             return Err(bock_common::BockError::Internal {
@@ -426,23 +549,34 @@ impl Container {
             });
         }
 
-        state.set_running();
-        drop(state); // Drop lock before saving
+        // Update state with scoped lock
+        {
+            let mut state = self.state.write();
+            state.set_running();
+        }
         self.save_state()?;
+
+        self.config
+            .event_bus
+            .publish(RuntimeEvent::ContainerStarted {
+                id: self.id.to_string(),
+                timestamp: chrono::Utc::now().timestamp(),
+            });
 
         Ok(())
     }
 
     /// Kill the container process.
     pub async fn kill(&self, signal: i32) -> BockResult<()> {
-        let state = self.state.read();
-
-        if state.status == ContainerStatus::Stopped {
-            return Err(bock_common::BockError::Config {
-                message: "Container is already stopped".to_string(),
-            });
+        // Check status with scoped lock
+        {
+            let state = self.state.read();
+            if state.status == ContainerStatus::Stopped {
+                return Err(bock_common::BockError::Config {
+                    message: "Container is already stopped".to_string(),
+                });
+            }
         }
-        drop(state);
 
         let pid = self.get_or_load_pid().await?;
 
@@ -465,19 +599,21 @@ impl Container {
 
     /// Wait for the container process to exit and return the exit code.
     pub async fn wait(&self) -> BockResult<i32> {
-        let state = self.state.read();
-        if state.status == ContainerStatus::Stopped {
-            return Ok(0); // Already stopped
+        // Check status with scoped lock
+        {
+            let state = self.state.read();
+            if state.status == ContainerStatus::Stopped {
+                return Ok(0); // Already stopped
+            }
+            if state.status != ContainerStatus::Running && state.status != ContainerStatus::Paused {
+                return Err(bock_common::BockError::Config {
+                    message: format!(
+                        "Container {} is not running (status: {})",
+                        self.id, state.status
+                    ),
+                });
+            }
         }
-        if state.status != ContainerStatus::Running && state.status != ContainerStatus::Paused {
-            return Err(bock_common::BockError::Config {
-                message: format!(
-                    "Container {} is not running (status: {})",
-                    self.id, state.status
-                ),
-            });
-        }
-        drop(state);
 
         let pid = self.get_or_load_pid().await?;
 
@@ -518,11 +654,19 @@ impl Container {
             message: format!("Task join error: {}", e),
         })??;
 
-        // Update state
-        let mut state = self.state.write();
-        state.set_stopped();
-        drop(state);
+        // Update state with scoped lock
+        {
+            let mut state = self.state.write();
+            state.set_stopped();
+        }
         self.save_state()?;
+
+        self.config
+            .event_bus
+            .publish(RuntimeEvent::ContainerStopped {
+                id: self.id.to_string(),
+                timestamp: chrono::Utc::now().timestamp(),
+            });
 
         // Clean up PID file
         let container_dir = self.config.paths.container(self.id.as_str());
@@ -679,12 +823,14 @@ impl Container {
 
     /// Delete the container.
     pub async fn delete(&self) -> BockResult<()> {
-        let state = self.state.read();
-
-        if state.status == ContainerStatus::Running {
-            return Err(bock_common::BockError::Config {
-                message: "Cannot delete running container. Stop it first.".to_string(),
-            });
+        // Check status with scoped lock
+        {
+            let state = self.state.read();
+            if state.status == ContainerStatus::Running {
+                return Err(bock_common::BockError::Config {
+                    message: "Cannot delete running container. Stop it first.".to_string(),
+                });
+            }
         }
 
         // Remove cgroup
@@ -698,7 +844,7 @@ impl Container {
             std::fs::remove_dir_all(&container_dir)?;
         }
 
-        // Cleanup network
+        // Cleanup network (no locks held during await)
         let host_if = format!(
             "veth{}",
             &self.id.as_str()[..std::cmp::min(6, self.id.as_str().len())]
@@ -714,6 +860,59 @@ impl Container {
         // Ignore errors during deletion (might not exist)
         let _ = veth.delete().await;
 
+        Ok(())
+    }
+
+    /// Execute a command_inside the container (via nsenter).
+    pub async fn exec_command(&self, cmd: &[String]) -> BockResult<i32> {
+        let pid = self.get_or_load_pid().await?;
+        let pid_str = pid.to_string();
+
+        let mut args = vec!["-t", &pid_str, "-a", "--"];
+        let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
+        args.extend(cmd_refs);
+
+        tracing::debug!(pid, command = ?cmd, "Executing command in container");
+
+        let status = std::process::Command::new("nsenter")
+            .args(&args)
+            .status()
+            .map_err(|e| bock_common::BockError::Internal {
+                message: format!("Failed to execute nsenter: {}", e),
+            })?;
+
+        Ok(status.code().unwrap_or(-1))
+    }
+
+    /// Set network configuration.
+    pub fn set_network_config(&mut self, config: NetworkConfig) -> BockResult<()> {
+        self.network_config = Some(config);
+        self.save_network_config()
+    }
+
+    /// Get network configuration.
+    pub fn network_config(&self) -> Option<&NetworkConfig> {
+        self.network_config.as_ref()
+    }
+
+    /// Save network configuration.
+    fn save_network_config(&self) -> BockResult<()> {
+        if let Some(config) = &self.network_config {
+            let container_dir = self.config.paths.container(self.id.as_str());
+            let path = container_dir.join("network.json");
+            let json = serde_json::to_string_pretty(config).map_err(|e| {
+                bock_common::BockError::Internal {
+                    message: format!("Failed to serialize network config: {}", e),
+                }
+            })?;
+            std::fs::write(&path, json).map_err(|e| bock_common::BockError::Internal {
+                message: format!(
+                    "Failed to write network config to {}: {}",
+                    path.display(),
+                    e
+                ),
+            })?;
+        }
         Ok(())
     }
 }

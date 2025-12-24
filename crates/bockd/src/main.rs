@@ -43,11 +43,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Spawn gRPC server
     let grpc_addr = std::net::SocketAddr::from(([0, 0, 0, 0], args.grpc_port));
+    let config = bock::runtime::RuntimeConfig::default();
 
     let grpc_handle = tokio::spawn(async move {
         tracing::info!("gRPC server listening on {}", grpc_addr);
         tonic::transport::Server::builder()
-            .add_service(grpc::grpc_server())
+            .add_service(grpc::grpc_server(config))
             .serve(grpc_addr)
             .await
             .unwrap();

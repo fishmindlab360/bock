@@ -256,6 +256,16 @@ pub enum Commands {
         #[arg(short, long)]
         bundle: PathBuf,
     },
+
+    /// Fetch container logs
+    Logs {
+        /// Container ID
+        container_id: String,
+
+        /// Follow log output
+        #[arg(short, long)]
+        follow: bool,
+    },
 }
 
 impl Cli {
@@ -426,6 +436,43 @@ impl Cli {
                                 std::path::PathBuf::from(&state.bundle).display()
                             );
                         }
+                    }
+                }
+                Ok(())
+            }
+
+            Commands::Logs {
+                container_id,
+                follow,
+            } => {
+                let container_dir = config.paths.container(&container_id);
+                // Try stdout first, maybe stderr? For now just stdout.
+                let log_path = container_dir.join("stdout.log");
+
+                if !log_path.exists() {
+                    return Err(color_eyre::eyre::eyre!(
+                        "Log file not found for container {}. (Note: only started containers have logs)",
+                        container_id
+                    ));
+                }
+
+                let file = std::fs::File::open(&log_path)?;
+                let mut reader = std::io::BufReader::new(file);
+                let mut line = String::new();
+
+                loop {
+                    line.clear();
+                    match std::io::BufRead::read_line(&mut reader, &mut line) {
+                        Ok(0) => {
+                            if !follow {
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                        Ok(_) => {
+                            print!("{}", line);
+                        }
+                        Err(e) => return Err(color_eyre::eyre::eyre!("Failed to read log: {}", e)),
                     }
                 }
                 Ok(())

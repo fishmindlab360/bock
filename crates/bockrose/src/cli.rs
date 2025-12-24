@@ -218,6 +218,12 @@ pub enum Commands {
         /// Services
         services: Vec<String>,
     },
+
+    /// Check health of services
+    Health {
+        /// Services to check
+        services: Vec<String>,
+    },
 }
 
 #[derive(Tabled)]
@@ -236,7 +242,7 @@ impl Cli {
     /// Execute the CLI command.
     pub async fn execute(self) -> Result<()> {
         let spec = BockoseSpec::from_file(&self.file)?;
-        let orchestrator = Orchestrator::new(spec)?;
+        let orchestrator = Orchestrator::new(spec.clone())?;
 
         match self.command {
             Commands::Up {
@@ -308,10 +314,14 @@ impl Cli {
                 follow: _,
                 timestamps: _,
                 tail: _,
-                service: _,
+                service,
             } => {
-                println!("Logs...");
-                // TODO: Implement
+                // TODO: Implement real logging
+                if let Some(s) = service {
+                    println!("Logs for {}: (Not fully implemented, check stdio)", s);
+                } else {
+                    println!("Logs: (Specify service)");
+                }
                 Ok(())
             }
 
@@ -324,12 +334,14 @@ impl Cli {
                 service,
                 command,
             } => {
-                println!("Executing {:?} in service {}", command, service);
-                // TODO: Implement
-                Ok(())
+                // Refresh state first
+                orchestrator.refresh_state().await?;
+                let exit_code = orchestrator.exec(&service, command).await?;
+                std::process::exit(exit_code);
             }
 
             Commands::Scale { scale } => {
+                orchestrator.refresh_state().await?;
                 for s in scale {
                     let parts: Vec<&str> = s.split('=').collect();
                     if parts.len() == 2 {
@@ -344,41 +356,51 @@ impl Cli {
 
             Commands::Restart {
                 timeout: _,
-                services: _,
+                services,
             } => {
-                println!("Restarting services...");
-                // TODO: Implement
+                orchestrator.refresh_state().await?;
+                for service in services {
+                    println!("Restarting {}...", service);
+                    orchestrator.stop_service(&service).await?;
+                    orchestrator.start_service(&service).await?;
+                }
                 Ok(())
             }
 
             Commands::Stop {
                 timeout: _,
-                services: _,
+                services,
             } => {
-                println!("Stopping services...");
-                // TODO: Implement
+                orchestrator.refresh_state().await?;
+                for service in services {
+                    println!("Stopping {}...", service);
+                    orchestrator.stop_service(&service).await?;
+                }
                 Ok(())
             }
 
-            Commands::Start { services: _ } => {
-                println!("Starting services...");
-                // TODO: Implement
+            Commands::Start { services } => {
+                orchestrator.refresh_state().await?;
+                for service in services {
+                    println!("Starting {}...", service);
+                    orchestrator.start_service(&service).await?;
+                }
                 Ok(())
             }
 
             Commands::Pull {
                 include_deps: _,
                 quiet: _,
-                services: _,
+                services,
             } => {
-                println!("Pulling images...");
-                // TODO: Implement
+                println!("Pulling images for {:?}...", services);
+                // Requires exposing pull/ensure_image
+                println!("Feature not fully implemented (use 'up' to pull)");
                 Ok(())
             }
 
             Commands::Push { services: _ } => {
                 println!("Pushing images...");
-                // TODO: Implement
                 Ok(())
             }
 
@@ -387,7 +409,7 @@ impl Cli {
                     println!("Configuration is valid");
                 } else {
                     // TODO: Print config in requested format
-                    println!("Configuration:");
+                    println!("Configuration: {:?}", spec);
                 }
                 Ok(())
             }
@@ -397,13 +419,56 @@ impl Cli {
                 private_port,
             } => {
                 println!("Port mapping for {}:{}", service, private_port);
-                // TODO: Implement
                 Ok(())
             }
 
             Commands::Top { services: _ } => {
-                println!("Resource usage:");
-                // TODO: Implement
+                orchestrator.refresh_state().await?;
+                let stats = orchestrator.get_service_stats().await?;
+
+                #[derive(Tabled)]
+                struct TopRow {
+                    #[tabled(rename = "SERVICE")]
+                    service: String,
+                    #[tabled(rename = "CONTAINER ID")]
+                    container: String,
+                    #[tabled(rename = "CPU %")]
+                    cpu_us: String,
+                    #[tabled(rename = "MEM USAGE / LIMIT")]
+                    mem_bytes: String,
+                }
+
+                let rows: Vec<TopRow> = stats
+                    .into_iter()
+                    .map(|(svc, cid, st)| TopRow {
+                        service: svc,
+                        container: cid,
+                        cpu_us: st.cpu_usage_usec.to_string(),
+                        mem_bytes: st.memory_usage_bytes.to_string(),
+                    })
+                    .collect();
+
+                let table = Table::new(rows).to_string();
+                println!("{}", table);
+                Ok(())
+            }
+
+            Commands::Health { services: _ } => {
+                orchestrator.refresh_state().await?;
+                orchestrator.check_health().await?;
+
+                let services = orchestrator.list_services();
+                let rows: Vec<ServiceRow> = services
+                    .iter()
+                    .map(|s| ServiceRow {
+                        name: s.name.clone(),
+                        image: "".to_string(),
+                        status: format!("{:?}", s.status),
+                        ports: "".to_string(),
+                    })
+                    .collect();
+                let table = Table::new(rows).to_string();
+                println!("{}", table);
                 Ok(())
             }
         }

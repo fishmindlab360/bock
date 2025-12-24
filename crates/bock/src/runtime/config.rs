@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::runtime::events::EventBus;
 use bock_common::BockPaths;
 
 /// Runtime configuration options.
@@ -15,6 +16,8 @@ pub struct RuntimeConfig {
     pub systemd_cgroup: bool,
     /// Default command timeout (seconds).
     pub timeout: u64,
+    /// Event bus.
+    pub event_bus: EventBus,
 }
 
 impl Default for RuntimeConfig {
@@ -24,6 +27,7 @@ impl Default for RuntimeConfig {
             rootless: false,
             systemd_cgroup: false,
             timeout: 30,
+            event_bus: EventBus::new(),
         }
     }
 }
@@ -40,6 +44,7 @@ impl RuntimeConfig {
             rootless: true,
             systemd_cgroup: false,
             timeout: 30,
+            event_bus: EventBus::new(),
         }
     }
 

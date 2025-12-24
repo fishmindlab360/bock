@@ -13,11 +13,11 @@ This document tracks the complete development status of the Bock container ecosy
 | **bock** (Container Runtime) | 🚧 In Development | ~80% |
 | **bock-common** | ✅ Complete | 100% |
 | **bock-oci** | ✅ Complete | 100% |
-| **bock-network** | 🚧 In Development | ~75% |
-| **bock-image** | 📋 Planned | ~10% |
-| **bock-runtime** (Image Builder) | 📋 Planned | ~20% |
-| **bockrose** (Orchestrator) | 📋 Planned | ~25% |
-| **bockd** (Daemon) | 📋 Planned | ~5% |
+| **bock-network** | ✅ Complete | 100% |
+| **bock-image** | ✅ Complete | 100% |
+| **bock-runtime** (Image Builder) | ✅ Complete | 100% |
+| **bockrose** (Orchestrator) | 🚧 In Development | ~75% |
+| **bockd** (Daemon) | 🚧 In Development | ~60% |
 
 ---
 
@@ -239,36 +239,36 @@ This document tracks the complete development status of the Bock container ecosy
 
 ---
 
-### Orchestrator (`bockrose`)
+### Orchestrator (`bockrose`) 🚧 IN PROGRESS
 
-#### Core Orchestration
-- [ ] `Orchestrator::up()` - Start all services
-- [ ] `Orchestrator::down()` - Stop and remove services
-- [ ] `Orchestrator::start_service()` - Start individual service
-- [ ] Dependency resolution (topological sort)
-- [ ] Service dependency graph
+#### Core Orchestration ✅ COMPLETE
+- [x] `Orchestrator::up()` - Start all services
+- [x] `Orchestrator::down()` - Stop and remove services
+- [x] `Orchestrator::start_service()` - Start individual service
+- [x] Dependency resolution (topological sort using Kahn's algorithm)
+- [x] Service dependency graph with cycle detection
 
-#### Service Lifecycle
-- [ ] Build images if needed
-- [ ] Pull images if needed
-- [ ] Create containers
-- [ ] Start containers
-- [ ] Stop containers
-- [ ] Remove containers
+#### Service Lifecycle ✅ COMPLETE
+- [x] Build images if needed (bock-runtime integration)
+- [x] Pull images if needed (ImageStore integration)
+- [x] Create containers (bock::Container::create)
+- [x] Start containers (bock::Container::start)
+- [x] Stop containers (SIGTERM + wait + delete)
+- [x] Remove containers
 - [ ] Restart containers
 
-#### Networking
-- [ ] `NetworkManager::create()` - Create overlay network
-- [ ] `NetworkManager::delete()` - Remove network
+#### Networking (TODO)
+- [x] `NetworkManager::create()` - Create overlay network
+- [x] `NetworkManager::delete()` - Remove network
 - [ ] Service discovery
 - [ ] DNS resolution between services
 
-#### Volumes
-- [ ] `VolumeManager::create()` - Create named volume
-- [ ] `VolumeManager::delete()` - Remove volume
+#### Volumes (TODO)
+- [x] `VolumeManager::create()` - Create named volume
+- [x] `VolumeManager::delete()` - Remove volume
 - [ ] Volume mounting
 
-#### Health Checks
+#### Health Checks (TODO)
 - [ ] `HealthMonitor::start()` - Begin health monitoring
 - [ ] `HealthMonitor::stop()` - Stop monitoring
 - [ ] HTTP health checks
@@ -277,9 +277,9 @@ This document tracks the complete development status of the Bock container ecosy
 - [ ] Restart policies (on-failure, always, unless-stopped)
 
 #### CLI Commands
-- [ ] `up` - Start services (partially implemented)
-- [ ] `down` - Stop services (partially implemented)
-- [ ] `ps` - List containers (partially implemented)
+- [x] `up` - Start services
+- [x] `down` - Stop services
+- [x] `ps` - List containers
 - [ ] `logs` - View service logs
 - [ ] `exec` - Execute command in service
 - [ ] `restart` - Restart services
@@ -293,13 +293,34 @@ This document tracks the complete development status of the Bock container ecosy
 
 ---
 
-### Daemon (`bockd`)
+### Daemon (`bockd`) 🚧 IN PROGRESS
 
-- [ ] gRPC API server
-- [ ] Container lifecycle management via API
-- [ ] Event streaming
+#### HTTP API (Axum) ✅ COMPLETE
+- [x] HTTP server on port 8080
+- [x] `GET /` - Health check
+- [x] `GET /version` - Version info
+- [x] `GET /containers` - List containers
+#### Orchestration Features (Next)
+- [ ] Helper process for orchestrator to manage lifecycle
+- [ ] Periodic health checks implementation
+- [ ] Simple Service Discovery (hosts file injection)
+#### gRPC API (Tonic) ✅ COMPLETE
+- [x] gRPC server on port 50051
+- [x] Proto definitions (`proto/bockd.proto`)
+- [x] ContainerService: ListContainers, GetContainer, CreateContainer
+- [x] ContainerService: StartContainer, StopContainer, KillContainer, DeleteContainer
+- [x] ContainerService: WatchEvents (streaming)
+- [x] ContainerService: StreamLogs (streaming)
+- [x] ImageService: ListImages, PullImage, DeleteImage (proto defined)
+
+#### Integration (In Progress)
+- [x] Connect gRPC handlers to bock runtime (Get/List)
+- [x] Connect gRPC handlers to bock runtime (Start/Stop/Kill/Delete)
+- [x] Capture container logs (stdout/stderr)
+- [x] Log streaming via gRPC
+- [ ] Event streaming implementation
 - [ ] Metrics collection
-- [ ] Log aggregation
+- [ ] Authentication/TLS
 
 ---
 
@@ -378,16 +399,17 @@ crates/
 - [x] Multi-stage builds
 - [x] Registry push/pull
 
-### Milestone 4: Orchestration
-- [ ] Multi-container services
+### Milestone 4: Orchestration 🚧 IN PROGRESS
+- [x] Service dependency resolution
+- [x] Service lifecycle management (start/stop)
 - [ ] Networking between services
 - [ ] Volume sharing
 - [ ] Health checks
 - [ ] Scaling
 
-### Milestone 5: Production Ready
-- [ ] Daemon mode
-- [ ] API server
+### Milestone 5: Production Ready 🚧 IN PROGRESS
+- [x] Daemon mode (bockd with dual HTTP/gRPC)
+- [x] API server (REST + gRPC)
 - [ ] Metrics & monitoring
 - [ ] Comprehensive testing
 - [ ] Documentation
