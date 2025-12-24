@@ -8,7 +8,8 @@ members = [
     "crates/bock-image",   # Image management
     "crates/bock-network", # Network primitives
     "crates/bock-common",
-    "crates/bockd",        # Shared utilities
+    "crates/bockd",
+    "crates/bock-ui",      # Shared utilities
 ]
 
 [workspace.package]
@@ -79,6 +80,7 @@ flate2 = "1.0"
 sha2 = "0.10"
 hex = "0.4"
 digest = "0.10"
+base64 = "0.22"
 
 # CLI
 clap = { version = "4.5", features = [

@@ -7,9 +7,12 @@
 //! - Layer caching and deduplication
 //! - Image storage and retrieval
 //! - Manifest and config handling
+//! - Credential management
 
 #![warn(missing_docs)]
 
+/// Credential management for registries.
+pub mod credentials;
 pub mod layer;
 pub mod reference;
 /// Image registry client.
@@ -17,5 +20,10 @@ pub mod registry;
 /// Local image store.
 pub mod store;
 
+pub use credentials::{
+    Credential, CredentialManager, CredentialStore, DockerConfig, EnvCredentialStore,
+    FileCredentialStore, PassCredentialStore,
+};
 pub use reference::ImageReference;
-pub use store::ImageStore;
+pub use registry::RegistryClient;
+pub use store::{Descriptor, ImageConfig, ImageManifest, ImageStore, StoredImage};

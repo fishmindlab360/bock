@@ -28,6 +28,17 @@ tracing = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
 tempfile = { workspace = true }
+walkdir = { workspace = true }
+base64 = { workspace = true }
+dirs = "6"
+
+[features]
+default = []
+keyring = ["dep:keyring"]
+
+[dependencies.keyring]
+version = "3"
+optional = true
 
 [dev-dependencies]
 insta = { workspace = true }

@@ -14,6 +14,9 @@ pub mod bockfile;
 pub mod build;
 pub mod cache;
 pub mod cli;
+pub mod registry;
 
 pub use bockfile::Bockfile;
-pub use build::Builder;
+pub use build::{BuildOptions, Builder, BuiltImage};
+pub use cache::{CacheInfo, CacheManager};
+pub use registry::{ImageInfo, ImageManifest, Registry, RegistryAuth};

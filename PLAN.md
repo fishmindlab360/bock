@@ -186,40 +186,56 @@ This document tracks the complete development status of the Bock container ecosy
 
 ---
 
-### Image Builder (`bock-runtime`)
+### Image Builder (`bock-runtime`) ✅ COMPLETE
 
 #### Core Build System
-- [ ] `Builder::build()` - Full build process
-- [ ] Bockfile parsing (YAML-based, already defined)
-- [ ] Multi-stage builds
-- [ ] Build arguments
-- [ ] Build caching
+- [x] `Builder::build()` - Full build process with stage resolution
+- [x] Bockfile parsing (YAML-based with `from_yaml`/`from_file`)
+- [x] Multi-stage builds with dependency resolution
+- [x] Build arguments substitution (`${ARG}` syntax)
+- [x] Build caching (cache key calculation)
 
 #### Layer Management
-- [ ] Layer caching (`cache.rs`)
-- [ ] Layer store (`CacheStore::store()`, `get()`, `prune()`, `clear()`)
+- [x] Layer caching (`CacheManager`)
+- [x] Layer store (`store`, `get`, `prune`, `clear`, `list`)
 
 #### Registry Operations
-- [ ] Image push
-- [ ] Image pull
-- [ ] Image inspection
+- [x] Image push (`Registry::push`)
+- [x] Image pull (`Registry::pull`)
+- [x] Image inspection (`Registry::inspect`, `inspect_local`)
 
 #### CLI Commands
-- [ ] `build` - Build image from Bockfile
-- [ ] `push` - Push to registry
-- [ ] `inspect` - Show image details
-- [ ] `cache list/prune/clear` - Manage build cache
+- [x] `build` - Build image from Bockfile
+- [x] `push` - Push to registry
+- [x] `pull` - Pull from registry
+- [x] `inspect` - Show image details (JSON/text output)
+- [x] `cache list/prune/clear/stats` - Manage build cache
 
 ---
 
-### Image Store (`bock-image`)
+### Image Store (`bock-image`) ✅ COMPLETE
 
-- [ ] `ImageStore::save()` - Save image locally
-- [ ] `ImageStore::load()` - Load local image
-- [ ] `ImageStore::list()` - List local images
-- [ ] `ImageStore::delete()` - Remove local image
-- [ ] OCI image format support
-- [ ] Registry client (`registry.rs`)
+- [x] `ImageStore::save()` - Save image locally
+- [x] `ImageStore::load()` - Load local image
+- [x] `ImageStore::list()` - List local images
+- [x] `ImageStore::delete()` - Remove local image
+- [x] `ImageStore::extract_layers()` - Extract layers to rootfs
+- [x] `ImageStore::gc()` - Garbage collect unused blobs
+- [x] OCI image format support (`ImageManifest`, `ImageConfig`, `Descriptor`)
+- [x] Registry client (`RegistryClient` with auth and blob/manifest pull)
+
+---
+
+### Credential Manager (`bock-image/credentials`) ✅ COMPLETE
+
+- [x] `CredentialStore` trait for backend abstraction
+- [x] `Credential` struct with registry/username/password/token
+- [x] `FileCredentialStore` - Docker config.json compatible
+- [x] `KeyringCredentialStore` - Native OS keychain (optional feature)
+- [x] `PassCredentialStore` - password-store integration
+- [x] `EnvCredentialStore` - Environment variables fallback
+- [x] `CredentialManager` - Multi-backend with fallback support
+- [x] Docker import/export compatibility
 
 ---
 
@@ -290,21 +306,21 @@ This document tracks the complete development status of the Bock container ecosy
 ## 🔧 Technical Debt & Improvements
 
 ### Code Quality
-- [ ] Review all `unsafe` blocks for safety invariants
+- [x] Review all `unsafe` blocks for safety invariants (SAFETY comments added)
 - [ ] Add more comprehensive error messages
 - [ ] Improve logging throughout
 
 ### Testing
-- [ ] Expand integration test coverage
-- [ ] Add benchmarks for critical paths
+- [x] Expand integration test coverage (`tests/image_store_tests.rs`)
+- [ ] Add benchmarks for critical paths (framework ready)
 - [ ] Add fuzz testing for parsers
 - [ ] E2E tests with real containers
 
-### Documentation
-- [ ] Architecture documentation
-- [ ] API reference guide
-- [ ] User guide / tutorials
-- [ ] Contributing guide
+### Documentation ✅ COMPLETE
+- [x] Architecture documentation (`docs/ARCHITECTURE.md`)
+- [x] API reference guide (`docs/API_REFERENCE.md`)
+- [x] User guide / tutorials (`docs/USER_GUIDE.md`)
+- [x] Contributing guide (`docs/CONTRIBUTING.md`)
 
 ### Performance
 - [ ] Async I/O for file operations

@@ -37,6 +37,7 @@ glob = { workspace = true }
 tempfile = { workspace = true }
 indicatif = { workspace = true }
 console = { workspace = true }
+dirs = "6"
 
 [dev-dependencies]
 insta = { workspace = true }

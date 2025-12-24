@@ -74,7 +74,8 @@ impl CacheManager {
     }
 
     /// Get cache entry info.
-    pub fn get_entry(&self, key: &str) -> Option<&CacheEntry> {
+    #[allow(unused)]
+    fn get_entry(&self, key: &str) -> Option<&CacheEntry> {
         self.metadata.entries.get(key)
     }
 

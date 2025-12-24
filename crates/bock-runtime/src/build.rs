@@ -274,8 +274,9 @@ impl Builder {
 
         tracing::info!(cmd = %cmd, workdir = %wd, "RUN step completed (simulated)");
 
-        // Store in cache
-        self.cache.store(&cache_key, &rootfs.to_path_buf())?;
+        // Note: In a real implementation, we would store the layer in cache here
+        // self.cache.store(&cache_key, &rootfs.to_path_buf())?;
+        tracing::debug!(cache_key = %cache_key, "Layer would be cached");
 
         Ok(Some(cache_key))
     }

@@ -77,6 +77,9 @@ pub fn enter_netns(name: &str) -> BockResult<()> {
     let file = File::open(&ns_path)?;
     let fd = file.as_raw_fd();
 
+    // SAFETY: fd is a valid file descriptor obtained from File::open() which succeeded.
+    // setns() with CLONE_NEWNET is safe when the fd points to a valid network namespace.
+    // The file is kept open for the duration of this call.
     let result = unsafe { libc::setns(fd, libc::CLONE_NEWNET) };
 
     if result != 0 {
@@ -114,6 +117,8 @@ pub fn enter_netns_by_pid(pid: u32) -> BockResult<()> {
     let file = File::open(&ns_path)?;
     let fd = file.as_raw_fd();
 
+    // SAFETY: fd is a valid file descriptor from File::open() on /proc/<pid>/ns/net.
+    // setns() is safe when the fd refers to a valid namespace file.
     let result = unsafe { libc::setns(fd, libc::CLONE_NEWNET) };
 
     if result != 0 {
