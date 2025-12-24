@@ -18,7 +18,7 @@ edition = "2024"
 authors = ["Bock Contributors"]
 license = "Apache-2.0 OR MIT"
 rust-version = "1.85"
-repository = "https://github.com/bock-containers/bock"
+repository = "https://github.com/fishmindlabs360/bock"
 description = "Modern container ecosystem built in Rust"
 keywords = ["containers", "docker", "runtime", "orchestration"]
 categories = ["command-line-utilities", "development-tools", "virtualization"]
@@ -70,6 +70,11 @@ rtnetlink = "0.19"
 # HTTP/Registry
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"] }
 oci-spec = "0.8.4"
+
+# gRPC
+tonic = "0.14.2"
+prost = "0.14.1"
+tonic-build = "0.14.2"
 
 # Compression
 tar = "0.4"

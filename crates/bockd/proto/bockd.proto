@@ -1,0 +1,158 @@
+syntax = "proto3";
+
+package bockd.v1;
+
+// Container service - manages container lifecycle
+service ContainerService {
+    // List all containers
+    rpc ListContainers(ListContainersRequest) returns (ListContainersResponse);
+    
+    // Get container details
+    rpc GetContainer(GetContainerRequest) returns (Container);
+    
+    // Create a new container
+    rpc CreateContainer(CreateContainerRequest) returns (Container);
+    
+    // Start a container
+    rpc StartContainer(ContainerIdRequest) returns (ContainerOperationResponse);
+    
+    // Stop a container
+    rpc StopContainer(StopContainerRequest) returns (ContainerOperationResponse);
+    
+    // Kill a container
+    rpc KillContainer(KillContainerRequest) returns (ContainerOperationResponse);
+    
+    // Delete a container
+    rpc DeleteContainer(ContainerIdRequest) returns (ContainerOperationResponse);
+    
+    // Stream container events
+    rpc WatchEvents(WatchEventsRequest) returns (stream ContainerEvent);
+    
+    // Stream container logs
+    rpc StreamLogs(StreamLogsRequest) returns (stream LogEntry);
+}
+
+// Image service - manages images
+service ImageService {
+    // List all images
+    rpc ListImages(ListImagesRequest) returns (ListImagesResponse);
+    
+    // Pull an image
+    rpc PullImage(PullImageRequest) returns (stream PullProgress);
+    
+    // Delete an image
+    rpc DeleteImage(ImageIdRequest) returns (ImageOperationResponse);
+}
+
+// Container messages
+message Container {
+    string id = 1;
+    string name = 2;
+    string image = 3;
+    string status = 4;
+    int64 created_at = 5;
+    map<string, string> labels = 6;
+}
+
+message ListContainersRequest {
+    bool all = 1;  // Include stopped containers
+    map<string, string> filters = 2;
+}
+
+message ListContainersResponse {
+    repeated Container containers = 1;
+}
+
+message GetContainerRequest {
+    string id = 1;
+}
+
+message CreateContainerRequest {
+    string name = 1;
+    string image = 2;
+    repeated string command = 3;
+    map<string, string> env = 4;
+    map<string, string> labels = 5;
+}
+
+message ContainerIdRequest {
+    string id = 1;
+}
+
+message StopContainerRequest {
+    string id = 1;
+    int32 timeout_seconds = 2;
+}
+
+message KillContainerRequest {
+    string id = 1;
+    int32 signal = 2;
+}
+
+message ContainerOperationResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Events
+message WatchEventsRequest {
+    repeated string container_ids = 1;  // Empty for all
+}
+
+message ContainerEvent {
+    string container_id = 1;
+    string event_type = 2;  // start, stop, die, kill, etc.
+    int64 timestamp = 3;
+    map<string, string> attributes = 4;
+}
+
+// Logs
+message StreamLogsRequest {
+    string container_id = 1;
+    bool follow = 2;
+    bool timestamps = 3;
+    int32 tail = 4;  // Number of lines from end, 0 for all
+}
+
+message LogEntry {
+    string container_id = 1;
+    string stream = 2;  // stdout or stderr
+    int64 timestamp = 3;
+    bytes data = 4;
+}
+
+// Image messages
+message Image {
+    string id = 1;
+    repeated string repo_tags = 2;
+    int64 size = 3;
+    int64 created_at = 4;
+}
+
+message ListImagesRequest {
+    map<string, string> filters = 1;
+}
+
+message ListImagesResponse {
+    repeated Image images = 1;
+}
+
+message PullImageRequest {
+    string reference = 1;  // e.g., "nginx:latest"
+}
+
+message PullProgress {
+    string status = 1;
+    string progress = 2;
+    int64 current = 3;
+    int64 total = 4;
+}
+
+message ImageIdRequest {
+    string id = 1;
+}
+
+message ImageOperationResponse {
+    bool success = 1;
+    string message = 2;
+}

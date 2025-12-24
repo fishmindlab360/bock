@@ -236,7 +236,7 @@ impl Cli {
     /// Execute the CLI command.
     pub async fn execute(self) -> Result<()> {
         let spec = BockoseSpec::from_file(&self.file)?;
-        let orchestrator = Orchestrator::new(spec);
+        let orchestrator = Orchestrator::new(spec)?;
 
         match self.command {
             Commands::Up {

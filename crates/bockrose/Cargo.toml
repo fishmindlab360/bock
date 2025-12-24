@@ -44,3 +44,4 @@ tabled = { workspace = true }
 insta = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
+tempfile = "3.10"
