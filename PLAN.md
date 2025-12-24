@@ -150,12 +150,12 @@ This document tracks the complete development status of the Bock container ecosy
 
 ## 📋 Planned (TODO)
 
-### Container Runtime (`bock`)
+### Container Runtime (`bock`) ✅ COMPLETE
 
 #### Process Execution
 - [x] PTY allocation (`PtyPair::new()`, `set_size()`, `setup_stdio()`)
 - [x] Init process (`ContainerInit`) - Proper PID 1 with signal handling
-- [ ] Stdio handling improvements (attach/detach modes)
+- [x] Stdio handling improvements (`StdioHandler` attach/detach modes)
 - [x] Console socket support for remote terminal attach (`ConsoleSocket`)
 
 #### Filesystem
@@ -163,26 +163,26 @@ This document tracks the complete development status of the Bock container ecosy
 - [x] Bind mounts with proper propagation (`bind_mount`, `make_private`, `make_shared`)
 - [x] Volume mounts (`VolumeManager` with create/get/remove/mount)
 - [x] Read-only filesystem support (`remount_readonly`)
-- [ ] Copy-on-write layer management
+- [x] Copy-on-write layer management (`LayerStore`)
 
 #### Security (Implementation)
 - [x] Seccomp filter application (compile BPF with seccompiler)
 - [x] Capability dropping (using `caps` crate)
-- [ ] AppArmor profile loading
-- [ ] SELinux label application
+- [x] AppArmor profile loading (`AppArmorProfile`)
+- [x] SELinux label application (`SELinuxContext`)
 - [x] `no_new_privs` enforcement
-- [ ] User namespace UID/GID mapping improvements
+- [x] User namespace UID/GID mapping improvements (`UserNamespaceConfig`)
 
 #### Cgroups
 - [x] Per-device I/O limits (`io.max` with BPS/IOPS)
-- [ ] Cgroup v1 fallback support
-- [ ] Memory pressure monitoring
+- [x] Cgroup v1 fallback support (`CgroupV1Manager`)
+- [x] Memory pressure monitoring (`MemoryPressureMonitor`)
 
 #### Networking
-- [ ] DNS server for container name resolution
-- [ ] IPv6 support
-- [ ] Macvlan/IPvlan network modes
-- [ ] Network policies/firewalling
+- [x] DNS server for container name resolution (`ContainerDns`)
+- [x] IPv6 support (`Ipv6Config`)
+- [x] Macvlan/IPvlan network modes
+- [x] Network policies/firewalling (`NetworkPolicy`)
 
 ---
 

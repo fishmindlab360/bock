@@ -2,6 +2,7 @@
 //!
 //! This module provides utilities for creating, managing, and entering
 //! Linux network namespaces.
+#![allow(unsafe_code)]
 
 use std::fs::File;
 use std::os::unix::io::AsRawFd;

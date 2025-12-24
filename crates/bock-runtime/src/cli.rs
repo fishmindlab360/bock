@@ -120,7 +120,7 @@ impl Cli {
                 let builder = Builder::new(bockfile, context, tag.clone());
                 let digest = builder.build().await?;
 
-                println!("Successfully built {}", digest);
+                println!("Successfully built {:?}", digest);
                 Ok(())
             }
 
