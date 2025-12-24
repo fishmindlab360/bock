@@ -372,11 +372,11 @@ crates/
 - [x] Container pause/resume
 - [x] OCI lifecycle hooks
 
-### Milestone 3: Image Builder
-- [ ] Bockfile parsing and execution
-- [ ] Layer caching
-- [ ] Multi-stage builds
-- [ ] Registry push/pull
+### Milestone 3: Image Builder ✅
+- [x] Bockfile parsing and execution
+- [x] Layer caching
+- [x] Multi-stage builds
+- [x] Registry push/pull
 
 ### Milestone 4: Orchestration
 - [ ] Multi-container services

@@ -6,6 +6,7 @@
 //! - Dynamic tag templates
 //! - Per-stage security configuration
 //! - Registry integration
+#![allow(unsafe_code)]
 
 use std::collections::HashMap;
 use std::fs;
@@ -308,7 +309,12 @@ pub enum RunStep {
 #[serde(untagged)]
 pub enum CopyStep {
     /// Simple copy (source to destination).
-    Simple { from: String, to: String },
+    Simple {
+        /// Source path.
+        from: String,
+        /// Destination path.
+        to: String,
+    },
 
     /// Detailed copy configuration.
     Detailed {
@@ -351,7 +357,12 @@ pub struct AddStep {
 #[serde(untagged)]
 pub enum EnvStep {
     /// Single env var.
-    Single { key: String, value: String },
+    Single {
+        /// Variable name.
+        key: String,
+        /// Variable value.
+        value: String,
+    },
     /// Multiple env vars.
     Multiple(HashMap<String, String>),
 }
@@ -363,7 +374,12 @@ pub enum ExposeStep {
     /// Simple port number.
     Port(u16),
     /// Port with protocol.
-    Detailed { port: u16, protocol: Option<String> },
+    Detailed {
+        /// Port number.
+        port: u16,
+        /// Protocol (tcp/udp).
+        protocol: Option<String>,
+    },
 }
 
 /// Healthcheck configuration.
@@ -541,8 +557,13 @@ impl Bockfile {
 
     /// Parse from YAML.
     pub fn from_yaml(content: &str) -> BockResult<Self> {
-        serde_yaml::from_str(content).map_err(|e| bock_common::BockError::Config {
-            message: format!("Failed to parse YAML: {}", e),
+        let value: serde_json::Value =
+            serde_yaml::from_str(content).map_err(|e| bock_common::BockError::Config {
+                message: format!("Failed to parse YAML structure: {}", e),
+            })?;
+
+        serde_json::from_value(value).map_err(|e| bock_common::BockError::Config {
+            message: format!("Failed to interpret YAML as Bockfile: {}", e),
         })
     }
 

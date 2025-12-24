@@ -40,6 +40,7 @@ indicatif = { workspace = true }
 console = { workspace = true }
 chrono = { workspace = true }
 dirs = "6"
+reqwest = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

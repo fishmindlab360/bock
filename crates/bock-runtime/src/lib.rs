@@ -12,7 +12,6 @@
 
 #![warn(missing_docs)]
 
-pub mod bockfile;
 /// Bockfile v2 - Modern cleaner format.
 pub mod bockfile_v2;
 pub mod build;
@@ -20,8 +19,8 @@ pub mod cache;
 pub mod cli;
 pub mod registry;
 
-pub use bockfile::Bockfile;
-pub use bockfile_v2::Bockfile as BockfileV2;
+pub use bockfile_v2::Bockfile;
+pub use bockfile_v2::Bockfile as BockfileV2; // Keep alias for compatibility if needed
 pub use build::{BuildOptions, Builder, BuiltImage};
 pub use cache::{CacheInfo, CacheManager};
 pub use registry::{ImageInfo, ImageManifest, Registry, RegistryAuth};

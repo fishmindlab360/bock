@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::Result;
 
-use crate::bockfile::Bockfile;
+use crate::bockfile_v2::Bockfile;
 use crate::build::{BuildOptions, Builder};
 use crate::cache::CacheManager;
 use crate::registry::{Registry, inspect_local};
