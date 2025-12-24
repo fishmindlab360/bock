@@ -33,48 +33,84 @@ bock stop <container-id>
 
 ## Building Images
 
-### Bockfile Syntax
+### Bockfile v2 Syntax
 
-Bockfiles use YAML for a cleaner, more expressive syntax:
+Bockfiles use a clean, modern syntax with YAML, TOML, or JSON support.
+
+#### Simple Example (YAML)
 
 ```yaml
 base:
-  from: "SomeImage" # use version automatically, i.e like if image is like "alpine:latest" and also version defined then priortize version. else fallback to "alpine:latest" else ignore.
-  alias: "for example builder" # alias is used to reference base image in stages
-  version: env.BASE_IMAGE_VERSION # version is used to reference base image version in stages
-
-args (with env support for fallback):
-  arg1 : Value
-  arg2: Env.someValue as Default value if not found// Arg Can be used anywhere with root.args.{{arg1}}
+  from: alpine:3.19
 
 metadata:
   name: my-app
   version: "1.0.0"
-  tag: my-app:version:git-sha # tag is used to reference image tag in stages as an example
-  description: My application
 
 stages:
-  - name/alias: build
+  - name: build
+    steps:
+      - run: apk add --no-cache curl
+      - copy:
+          copy: [src/]
+          to: /app/
+
+runtime:
+  cmd: ["/app/run"]
+```
+
+#### Full-Featured Example
+
+```yaml
+# Base image with env version override
+base:
+  from: alpine
+  alias: builder
+  version: env.ALPINE_VERSION    # Use $ALPINE_VERSION if set
+
+# Build args with environment fallback
+args:
+  APP_VERSION:
+    default: "1.0.0"
+    env: VERSION                 # Use $VERSION if set
+  DEBUG_MODE: "false"
+
+# Image metadata with dynamic tag
+metadata:
+  name: my-app
+  version: "{{args.APP_VERSION}}"
+  tag: "{{name}}:{{version}}-{{git.sha_short}}"
+  description: My application
+
+# Multi-stage build
+stages:
+  - name: deps
     steps:
       - run: apk add --no-cache build-base
-      - copy:
-          - src/
-        to: /app/src
-      - run: cd /app && make
-        workdir: /app
-    ... other configs
 
-  - name or alias: runtime
-    depends:
-      - build
+  - name: build
+    depends: [deps]
+    workdir: /app
     steps:
       - copy:
-          - --from=build
-          - /app/bin/myapp
-        to: /usr/local/bin/
-      - user: nobody
-    ... other configs
+          copy: ["."]
+          to: /app/
+      - run: make build
 
+  - name: runtime
+    from: alpine:3.19           # Fresh base for final image
+    depends: [build]
+    security:                    # Per-stage security
+      user: nobody
+      capabilities_drop: [ALL]
+    steps:
+      - copy:
+          copy: [/app/bin/myapp]
+          to: /usr/local/bin/
+          from_stage: build
+      - user: nobody
+
+# Runtime configuration
 runtime:
   entrypoint: ["/usr/local/bin/myapp"]
   cmd: ["--help"]
@@ -82,16 +118,27 @@ runtime:
     APP_ENV: production
   workdir: /app
 
-security (with per stage level security configuration):
+# Global security defaults
+security:
   user: nobody
-  capabilities:
-    drop:
-      - ALL
+  no_new_privs: true
+  capabilities_drop: [ALL]
 
+# Auto-push to registry
 registry:
-    name: some_registry
-    push_on_build: true // Push on sucess build.
+  name: ghcr.io/myorg
+  push_on_build: true
 ```
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| `base.version: env.VAR` | Override image tag from environment |
+| `args.X.env: VAR` | Fallback to env var for arg value |
+| `{{git.sha_short}}` | Dynamic tag with git SHA |
+| `stages[].security` | Per-stage security config |
+| `registry.push_on_build` | Auto-push after successful build |
 
 ### Building
 
@@ -107,6 +154,9 @@ bock build --build-arg APP_VERSION=2.0 .
 
 # No cache
 bock build --no-cache .
+
+# Target specific stage
+bock build --target build .
 ```
 
 ## Container Management
@@ -190,11 +240,11 @@ bock login -u username -p password registry.example.com
 
 Credentials are stored at `~/.bock/credentials.json` in Docker-compatible format.
 
-Environment variables also work:
-```bash
-export BOCK_REGISTRY_DOCKER_IO_USERNAME=user
-export BOCK_REGISTRY_DOCKER_IO_PASSWORD=token
-```
+Supports multiple backends:
+- **File** (default) - `~/.bock/credentials.json`
+- **Keyring** - Native OS keychain
+- **Pass** - password-store
+- **Environment** - `BOCK_REGISTRY_<HOST>_USERNAME/PASSWORD`
 
 ## Networking
 
@@ -289,3 +339,9 @@ RUST_LOG=debug bock run alpine
 **Image not found**: Check registry credentials and image name.
 
 **Port already in use**: Choose a different host port.
+
+## See Also
+
+- [Bockfile Specification](./BOCKFILE_SPEC.md) - Complete format reference
+- [API Reference](./API_REFERENCE.md) - Rust API documentation
+- [Architecture](./ARCHITECTURE.md) - System design
