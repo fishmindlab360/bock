@@ -7,7 +7,8 @@ members = [
     "crates/bock-oci",     # OCI specs
     "crates/bock-image",   # Image management
     "crates/bock-network", # Network primitives
-    "crates/bock-common", "crates/bockd",  # Shared utilities
+    "crates/bock-common",
+    "crates/bockd",        # Shared utilities
 ]
 
 [workspace.package]
@@ -51,7 +52,7 @@ rustix = { version = "1.1.3", features = [
     "event",
 ] }
 caps = "0.5"
-seccompiler = "0.5"
+seccompiler = { version = "0.5", features = ["json"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive", "rc"] }
@@ -61,7 +62,7 @@ toml = "0.9"
 
 # Networking
 netlink-packet-core = "0.8.1"
-netlink-packet-route = "0.26"
+netlink-packet-route = "0.27"
 netlink-sys = "0.8"
 rtnetlink = "0.19"
 

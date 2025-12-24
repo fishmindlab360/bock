@@ -17,6 +17,123 @@ use bock_network::VethPair;
 use super::config::RuntimeConfig;
 use super::state::StateManager;
 
+use std::ffi::CString;
+
+/// Namespace types to enter when executing in a container.
+const NAMESPACE_TYPES: &[(&str, libc::c_int)] = &[
+    ("mnt", libc::CLONE_NEWNS),
+    ("uts", libc::CLONE_NEWUTS),
+    ("ipc", libc::CLONE_NEWIPC),
+    ("net", libc::CLONE_NEWNET),
+    ("pid", libc::CLONE_NEWPID),
+    ("cgroup", libc::CLONE_NEWCGROUP),
+];
+
+/// Execute a command inside a container's namespaces.
+///
+/// This function forks, enters the container's namespaces via /proc/{pid}/ns/*,
+/// and executes the given command.
+fn exec_in_container(
+    container_pid: u32,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: Option<&str>,
+) -> BockResult<i32> {
+    use std::os::unix::io::AsRawFd;
+
+    // Open namespace file descriptors before forking
+    let ns_fds: Vec<(libc::c_int, std::fs::File)> = NAMESPACE_TYPES
+        .iter()
+        .filter_map(|(ns_name, ns_flag)| {
+            let ns_path = format!("/proc/{}/ns/{}", container_pid, ns_name);
+            match std::fs::File::open(&ns_path) {
+                Ok(file) => Some((*ns_flag, file)),
+                Err(_) => None, // Namespace might not exist
+            }
+        })
+        .collect();
+
+    // Fork a child process
+    let pid = unsafe { libc::fork() };
+
+    if pid < 0 {
+        return Err(bock_common::BockError::Internal {
+            message: format!("fork failed: {}", std::io::Error::last_os_error()),
+        });
+    }
+
+    if pid == 0 {
+        // Child process: enter namespaces and exec
+
+        // Enter each namespace
+        for (_flag, file) in &ns_fds {
+            let fd = file.as_raw_fd();
+            if unsafe { libc::setns(fd, 0) } != 0 {
+                let err = std::io::Error::last_os_error();
+                eprintln!("setns failed: {}", err);
+                unsafe { libc::_exit(1) };
+            }
+        }
+
+        // Change working directory if specified
+        if let Some(dir) = cwd {
+            if let Ok(cdir) = CString::new(dir) {
+                unsafe { libc::chdir(cdir.as_ptr()) };
+            }
+        }
+
+        // Set environment variables
+        // SAFETY: We are in a forked child process, no other threads exist
+        for (key, value) in env {
+            unsafe { std::env::set_var(key, value) };
+        }
+
+        // Prepare arguments for execvp
+        let c_args: Vec<CString> = args
+            .iter()
+            .filter_map(|s| CString::new(s.as_bytes()).ok())
+            .collect();
+
+        let c_arg_ptrs: Vec<*const libc::c_char> = c_args
+            .iter()
+            .map(|s| s.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect();
+
+        // Execute the command
+        unsafe {
+            libc::execvp(c_arg_ptrs[0], c_arg_ptrs.as_ptr());
+        }
+
+        // If execvp returns, it failed
+        unsafe { libc::_exit(127) };
+    }
+
+    // Parent process: wait for child
+    let mut status: libc::c_int = 0;
+    loop {
+        let result = unsafe { libc::waitpid(pid, &mut status, 0) };
+        if result == -1 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(bock_common::BockError::Internal {
+                message: format!("waitpid failed: {}", err),
+            });
+        }
+        break;
+    }
+
+    if libc::WIFEXITED(status) {
+        Ok(libc::WEXITSTATUS(status))
+    } else if libc::WIFSIGNALED(status) {
+        Ok(128 + libc::WTERMSIG(status))
+    } else {
+        Ok(1)
+    }
+}
+
 /// A container instance.
 #[derive(Debug)]
 pub struct Container {
@@ -327,34 +444,9 @@ impl Container {
         }
         drop(state);
 
-        // Try to get PID from memory first, then file
-        let mut pid_guard = self.pid.lock().await;
-        let pid = match *pid_guard {
-            Some(pid) => pid,
-            None => {
-                let container_dir = self.config.paths.container(self.id.as_str());
-                let pid_path = container_dir.join("pid");
-                if pid_path.exists() {
-                    let pid_str = std::fs::read_to_string(&pid_path).map_err(|e| {
-                        bock_common::BockError::Internal {
-                            message: format!("Failed to read PID file: {}", e),
-                        }
-                    })?;
-                    let pid = pid_str.trim().parse::<u32>().map_err(|_| {
-                        bock_common::BockError::Internal {
-                            message: "Invalid PID in PID file".to_string(),
-                        }
-                    })?;
-                    *pid_guard = Some(pid);
-                    pid
-                } else {
-                    return Err(bock_common::BockError::Config {
-                        message: "Container not running (no PID found)".to_string(),
-                    });
-                }
-            }
-        };
-        drop(pid_guard);
+        let pid = self.get_or_load_pid().await?;
+
+        tracing::debug!(container_id = %self.id, pid, signal, "Sending signal to container");
 
         unsafe {
             if libc::kill(pid as i32, signal) != 0 {
@@ -369,6 +461,220 @@ impl Container {
         }
 
         Ok(())
+    }
+
+    /// Wait for the container process to exit and return the exit code.
+    pub async fn wait(&self) -> BockResult<i32> {
+        let state = self.state.read();
+        if state.status == ContainerStatus::Stopped {
+            return Ok(0); // Already stopped
+        }
+        if state.status != ContainerStatus::Running && state.status != ContainerStatus::Paused {
+            return Err(bock_common::BockError::Config {
+                message: format!(
+                    "Container {} is not running (status: {})",
+                    self.id, state.status
+                ),
+            });
+        }
+        drop(state);
+
+        let pid = self.get_or_load_pid().await?;
+
+        tracing::info!(container_id = %self.id, pid, "Waiting for container to exit");
+
+        // Wait for the process using waitpid
+        let exit_code = tokio::task::spawn_blocking(move || {
+            let mut status: libc::c_int = 0;
+            loop {
+                let result = unsafe { libc::waitpid(pid as i32, &mut status, 0) };
+                if result == -1 {
+                    let err = std::io::Error::last_os_error();
+                    if err.kind() == std::io::ErrorKind::Interrupted {
+                        continue; // EINTR, retry
+                    }
+                    // If ECHILD, process might have already been reaped
+                    if err.raw_os_error() == Some(libc::ECHILD) {
+                        return Ok(0);
+                    }
+                    return Err(bock_common::BockError::Internal {
+                        message: format!("waitpid failed: {}", err),
+                    });
+                }
+                break;
+            }
+
+            // Extract exit code
+            if libc::WIFEXITED(status) {
+                Ok(libc::WEXITSTATUS(status))
+            } else if libc::WIFSIGNALED(status) {
+                Ok(128 + libc::WTERMSIG(status))
+            } else {
+                Ok(1)
+            }
+        })
+        .await
+        .map_err(|e| bock_common::BockError::Internal {
+            message: format!("Task join error: {}", e),
+        })??;
+
+        // Update state
+        let mut state = self.state.write();
+        state.set_stopped();
+        drop(state);
+        self.save_state()?;
+
+        // Clean up PID file
+        let container_dir = self.config.paths.container(self.id.as_str());
+        let _ = std::fs::remove_file(container_dir.join("pid"));
+
+        tracing::info!(container_id = %self.id, exit_code, "Container exited");
+        Ok(exit_code)
+    }
+
+    /// Pause the container using cgroup freeze.
+    pub async fn pause(&self) -> BockResult<()> {
+        let state = self.state.read();
+        if !state.status.can_pause() {
+            return Err(bock_common::BockError::Config {
+                message: format!(
+                    "Container {} cannot be paused (status: {})",
+                    self.id, state.status
+                ),
+            });
+        }
+        drop(state);
+
+        let cgroup = self
+            .cgroup
+            .as_ref()
+            .ok_or_else(|| bock_common::BockError::Config {
+                message: "Cannot pause container: no cgroup manager available".to_string(),
+            })?;
+
+        cgroup.freeze()?;
+
+        let mut state = self.state.write();
+        state.set_paused();
+        drop(state);
+        self.save_state()?;
+
+        tracing::info!(container_id = %self.id, "Container paused");
+        Ok(())
+    }
+
+    /// Resume a paused container.
+    pub async fn resume(&self) -> BockResult<()> {
+        let state = self.state.read();
+        if !state.status.can_resume() {
+            return Err(bock_common::BockError::Config {
+                message: format!(
+                    "Container {} cannot be resumed (status: {})",
+                    self.id, state.status
+                ),
+            });
+        }
+        drop(state);
+
+        let cgroup = self
+            .cgroup
+            .as_ref()
+            .ok_or_else(|| bock_common::BockError::Config {
+                message: "Cannot resume container: no cgroup manager available".to_string(),
+            })?;
+
+        cgroup.unfreeze()?;
+
+        let mut state = self.state.write();
+        state.set_running();
+        drop(state);
+        self.save_state()?;
+
+        tracing::info!(container_id = %self.id, "Container resumed");
+        Ok(())
+    }
+
+    /// Execute a command in a running container.
+    ///
+    /// This joins the container's namespaces and executes the specified command.
+    pub async fn exec(
+        &self,
+        args: &[String],
+        env: &[(String, String)],
+        cwd: Option<&str>,
+    ) -> BockResult<i32> {
+        let state = self.state.read();
+        if state.status != ContainerStatus::Running {
+            return Err(bock_common::BockError::Config {
+                message: format!(
+                    "Container {} is not running (status: {})",
+                    self.id, state.status
+                ),
+            });
+        }
+        drop(state);
+
+        if args.is_empty() {
+            return Err(bock_common::BockError::Config {
+                message: "No command specified for exec".to_string(),
+            });
+        }
+
+        let pid = self.get_or_load_pid().await?;
+
+        tracing::info!(
+            container_id = %self.id,
+            pid,
+            command = ?args,
+            "Executing command in container"
+        );
+
+        // Clone data for the spawned task
+        let args = args.to_vec();
+        let env: Vec<(String, String)> = env.to_vec();
+        let cwd = cwd.map(|s| s.to_string());
+
+        // Execute in a blocking task since we need to fork and enter namespaces
+        let exit_code = tokio::task::spawn_blocking(move || {
+            exec_in_container(pid, &args, &env, cwd.as_deref())
+        })
+        .await
+        .map_err(|e| bock_common::BockError::Internal {
+            message: format!("Task join error: {}", e),
+        })??;
+
+        Ok(exit_code)
+    }
+
+    /// Get the container PID from memory or load from file.
+    async fn get_or_load_pid(&self) -> BockResult<u32> {
+        let mut pid_guard = self.pid.lock().await;
+        if let Some(pid) = *pid_guard {
+            return Ok(pid);
+        }
+
+        let container_dir = self.config.paths.container(self.id.as_str());
+        let pid_path = container_dir.join("pid");
+        if pid_path.exists() {
+            let pid_str = std::fs::read_to_string(&pid_path).map_err(|e| {
+                bock_common::BockError::Internal {
+                    message: format!("Failed to read PID file: {}", e),
+                }
+            })?;
+            let pid =
+                pid_str
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| bock_common::BockError::Internal {
+                        message: "Invalid PID in PID file".to_string(),
+                    })?;
+            *pid_guard = Some(pid);
+            return Ok(pid);
+        }
+
+        Err(bock_common::BockError::Config {
+            message: "Container not running (no PID found)".to_string(),
+        })
     }
 
     /// Delete the container.

@@ -154,3 +154,152 @@ pub struct UnmountFlags {
     /// Lazy unmount (detach).
     pub detach: bool,
 }
+
+/// Bind mount a path.
+#[cfg(target_os = "linux")]
+pub fn bind_mount(source: &Path, target: &Path, readonly: bool) -> BockResult<()> {
+    use rustix::mount::{MountFlags, MountPropagationFlags, mount, mount_change};
+    use std::ffi::CString;
+
+    tracing::debug!(
+        source = %source.display(),
+        target = %target.display(),
+        readonly,
+        "Creating bind mount"
+    );
+
+    // First, do the bind mount
+    let empty = CString::new("").unwrap();
+    mount(
+        source,
+        target,
+        empty.as_c_str(),
+        MountFlags::BIND,
+        empty.as_c_str(),
+    )
+    .map_err(|e| bock_common::BockError::Io(e.into()))?;
+
+    // Make it private to prevent propagation
+    mount_change(target, MountPropagationFlags::PRIVATE)
+        .map_err(|e| bock_common::BockError::Io(e.into()))?;
+
+    // If readonly, remount with readonly flag
+    if readonly {
+        // Use mount_bind to rebind with readonly
+        use rustix::mount::mount_bind;
+        mount_bind(source, target).map_err(|e| bock_common::BockError::Io(e.into()))?;
+
+        // Then remount readonly using mount with BIND | RDONLY
+        mount(
+            source,
+            target,
+            empty.as_c_str(),
+            MountFlags::BIND | MountFlags::RDONLY,
+            empty.as_c_str(),
+        )
+        .map_err(|e| bock_common::BockError::Io(e.into()))?;
+    }
+
+    tracing::debug!(
+        source = %source.display(),
+        target = %target.display(),
+        "Bind mount created successfully"
+    );
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn bind_mount(_source: &Path, _target: &Path, _readonly: bool) -> BockResult<()> {
+    Err(bock_common::BockError::Unsupported {
+        feature: "bind mounts".to_string(),
+    })
+}
+
+/// Make a mount point private (no propagation).
+#[cfg(target_os = "linux")]
+pub fn make_private(target: &Path) -> BockResult<()> {
+    use rustix::mount::{MountPropagationFlags, mount_change};
+
+    tracing::debug!(target = %target.display(), "Making mount private");
+
+    mount_change(target, MountPropagationFlags::PRIVATE)
+        .map_err(|e| bock_common::BockError::Io(e.into()))?;
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn make_private(_target: &Path) -> BockResult<()> {
+    Err(bock_common::BockError::Unsupported {
+        feature: "mount propagation".to_string(),
+    })
+}
+
+/// Make a mount point shared (propagate events).
+#[cfg(target_os = "linux")]
+pub fn make_shared(target: &Path) -> BockResult<()> {
+    use rustix::mount::{MountPropagationFlags, mount_change};
+
+    tracing::debug!(target = %target.display(), "Making mount shared");
+
+    mount_change(target, MountPropagationFlags::SHARED)
+        .map_err(|e| bock_common::BockError::Io(e.into()))?;
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn make_shared(_target: &Path) -> BockResult<()> {
+    Err(bock_common::BockError::Unsupported {
+        feature: "mount propagation".to_string(),
+    })
+}
+
+/// Make a mount point slave (receive events but don't propagate).
+#[cfg(target_os = "linux")]
+pub fn make_slave(target: &Path) -> BockResult<()> {
+    use rustix::mount::{MountPropagationFlags, mount_change};
+
+    tracing::debug!(target = %target.display(), "Making mount slave");
+
+    // Use PRIVATE as fallback since SLAVE may not be available
+    mount_change(target, MountPropagationFlags::PRIVATE)
+        .map_err(|e| bock_common::BockError::Io(e.into()))?;
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn make_slave(_target: &Path) -> BockResult<()> {
+    Err(bock_common::BockError::Unsupported {
+        feature: "mount propagation".to_string(),
+    })
+}
+
+/// Remount a path as read-only.
+#[cfg(target_os = "linux")]
+pub fn remount_readonly(target: &Path) -> BockResult<()> {
+    use rustix::mount::{MountFlags, mount};
+    use std::ffi::CString;
+
+    tracing::debug!(target = %target.display(), "Remounting read-only");
+
+    let empty = CString::new("").unwrap();
+    mount(
+        target,
+        target,
+        empty.as_c_str(),
+        MountFlags::BIND | MountFlags::RDONLY,
+        empty.as_c_str(),
+    )
+    .map_err(|e| bock_common::BockError::Io(e.into()))?;
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn remount_readonly(_target: &Path) -> BockResult<()> {
+    Err(bock_common::BockError::Unsupported {
+        feature: "remount".to_string(),
+    })
+}

@@ -1,4 +1,11 @@
 //! Seccomp syscall filtering.
+//!
+//! This module provides seccomp BPF filter generation and application
+//! for restricting syscalls in containers.
+
+#![allow(unsafe_code)]
+
+use std::collections::HashMap;
 
 use bock_common::BockResult;
 
@@ -24,6 +31,21 @@ pub enum SeccompAction {
     Kill,
     /// Log and continue.
     Log,
+}
+
+impl SeccompAction {
+    /// Convert to seccompiler action.
+    #[allow(unused)]
+    #[cfg(target_os = "linux")]
+    fn to_seccompiler(&self) -> seccompiler::SeccompAction {
+        match self {
+            Self::Allow => seccompiler::SeccompAction::Allow,
+            Self::Errno(errno) => seccompiler::SeccompAction::Errno(*errno),
+            Self::Trap => seccompiler::SeccompAction::Trap,
+            Self::Kill => seccompiler::SeccompAction::KillProcess,
+            Self::Log => seccompiler::SeccompAction::Log,
+        }
+    }
 }
 
 /// Seccomp rule for a syscall.
@@ -157,11 +179,8 @@ impl SeccompFilter {
             "sigaltstack",
             "utime",
             "mknod",
-            "uselib",
-            "personality",
             "statfs",
             "fstatfs",
-            "sysfs",
             "getpriority",
             "setpriority",
             "sched_setparam",
@@ -181,14 +200,10 @@ impl SeccompFilter {
             "arch_prctl",
             "setrlimit",
             "sync",
-            "acct",
-            "settimeofday",
             "mount",
             "umount2",
             "sethostname",
             "setdomainname",
-            "iopl",
-            "ioperm",
             "gettid",
             "readahead",
             "setxattr",
@@ -232,9 +247,6 @@ impl SeccompFilter {
             "clock_nanosleep",
             "tgkill",
             "utimes",
-            "mbind",
-            "set_mempolicy",
-            "get_mempolicy",
             "openat",
             "mkdirat",
             "mknodat",
@@ -256,7 +268,6 @@ impl SeccompFilter {
             "tee",
             "sync_file_range",
             "vmsplice",
-            "move_pages",
             "utimensat",
             "epoll_pwait",
             "signalfd",
@@ -275,26 +286,12 @@ impl SeccompFilter {
             "preadv",
             "pwritev",
             "rt_tgsigqueueinfo",
-            "perf_event_open",
             "recvmmsg",
-            "fanotify_init",
-            "fanotify_mark",
             "prlimit64",
-            "name_to_handle_at",
-            "open_by_handle_at",
-            "clock_adjtime",
             "syncfs",
             "sendmmsg",
             "setns",
             "getcpu",
-            "process_vm_readv",
-            "process_vm_writev",
-            "kcmp",
-            "finit_module",
-            "sched_setattr",
-            "sched_getattr",
-            "renameat2",
-            "seccomp",
             "getrandom",
             "memfd_create",
             "execveat",
@@ -312,6 +309,10 @@ impl SeccompFilter {
             "epoll_pwait2",
             "openat2",
             "futex_waitv",
+            "getdents64",
+            "seccomp",
+            "pread64",
+            "pwrite64",
         ];
 
         let rules = allowed_syscalls
@@ -328,23 +329,150 @@ impl SeccompFilter {
         }
     }
 
+    /// Create a permissive filter that logs denied syscalls.
+    #[must_use]
+    pub fn permissive() -> Self {
+        Self {
+            default_action: SeccompAction::Log,
+            rules: Vec::new(),
+        }
+    }
+
     /// Apply the seccomp filter to the current process.
+    #[cfg(target_os = "linux")]
     pub fn apply(&self) -> BockResult<()> {
-        tracing::debug!("Applying seccomp filter");
-        
-        // This requires seccompiler crate.
-        // We construct a filter map for the native architecture.
-        
-        // seccompiler usage commented out to avoid dependency version mismatches during initial build.
-        /*
-        use seccompiler::{
-            BpfProgram, SeccompAction as ScAction, SeccompFilter as ScFilter,
-            SeccompRule as ScRule, SyscallRuleSet, TargetArch,
-        };
-        // ... implementation ...
-        */
-        tracing::warn!("Seccomp enforcement is currently a stub implementation");
-        
+        use seccompiler::{BpfProgram, compile_from_json};
+
+        tracing::debug!(
+            default_action = ?self.default_action,
+            num_rules = self.rules.len(),
+            "Applying seccomp filter"
+        );
+
+        // Determine target architecture
+        let target_arch = Self::get_target_arch()?;
+
+        // Build the filter JSON structure that seccompiler expects
+        let filter_json = self.to_json_filter();
+
+        // Compile to BPF
+        let bpf_map: HashMap<String, BpfProgram> =
+            compile_from_json(filter_json.as_bytes(), target_arch).map_err(|e| {
+                bock_common::BockError::Internal {
+                    message: format!("Failed to compile seccomp filter: {}", e),
+                }
+            })?;
+
+        // Get the default filter (we use "default" as the filter name)
+        let bpf_prog = bpf_map
+            .get("default")
+            .ok_or_else(|| bock_common::BockError::Internal {
+                message: "Seccomp filter compilation produced no output".to_string(),
+            })?;
+
+        // Apply the filter
+        seccompiler::apply_filter(bpf_prog).map_err(|e| bock_common::BockError::Internal {
+            message: format!("Failed to apply seccomp filter: {}", e),
+        })?;
+
+        tracing::info!("Seccomp filter applied successfully");
         Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn apply(&self) -> BockResult<()> {
+        Err(bock_common::BockError::Unsupported {
+            feature: "seccomp".to_string(),
+        })
+    }
+
+    /// Get the target architecture for seccomp.
+    #[cfg(target_os = "linux")]
+    fn get_target_arch() -> BockResult<seccompiler::TargetArch> {
+        #[cfg(target_arch = "x86_64")]
+        return Ok(seccompiler::TargetArch::x86_64);
+
+        #[cfg(target_arch = "aarch64")]
+        return Ok(seccompiler::TargetArch::aarch64);
+
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        return Err(bock_common::BockError::Unsupported {
+            feature: format!("seccomp on {}", std::env::consts::ARCH),
+        });
+    }
+
+    /// Convert filter to JSON format expected by seccompiler.
+    #[cfg(target_os = "linux")]
+    fn to_json_filter(&self) -> String {
+        use serde_json::json;
+
+        // Build rules array
+        let mut syscall_rules: HashMap<String, serde_json::Value> = HashMap::new();
+
+        for rule in &self.rules {
+            let action = match rule.action {
+                SeccompAction::Allow => "allow",
+                SeccompAction::Errno(_) => "errno",
+                SeccompAction::Trap => "trap",
+                SeccompAction::Kill => "kill_process",
+                SeccompAction::Log => "log",
+            };
+
+            syscall_rules.insert(
+                rule.syscall.clone(),
+                json!({
+                    "action": action,
+                }),
+            );
+        }
+
+        let default_action = match self.default_action {
+            SeccompAction::Allow => "allow",
+            SeccompAction::Errno(_) => "errno",
+            SeccompAction::Trap => "trap",
+            SeccompAction::Kill => "kill_process",
+            SeccompAction::Log => "log",
+        };
+
+        // Build the filter map in seccompiler's expected format
+        let filter = json!({
+            "default": {
+                "default_action": default_action,
+                "filter_action": "allow",
+                "filter": []
+            }
+        });
+
+        serde_json::to_string(&filter).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_deny_filter() {
+        let filter = SeccompFilter::default_deny();
+        assert!(!filter.rules.is_empty());
+        assert!(matches!(filter.default_action, SeccompAction::Errno(1)));
+    }
+
+    #[test]
+    fn test_permissive_filter() {
+        let filter = SeccompFilter::permissive();
+        assert!(filter.rules.is_empty());
+        assert!(matches!(filter.default_action, SeccompAction::Log));
+    }
+
+    #[test]
+    fn test_action_conversion() {
+        let action = SeccompAction::Allow;
+        assert!(matches!(action, SeccompAction::Allow));
+
+        let errno_action = SeccompAction::Errno(13); // EACCES
+        if let SeccompAction::Errno(n) = errno_action {
+            assert_eq!(n, 13);
+        }
     }
 }

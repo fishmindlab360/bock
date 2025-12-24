@@ -54,6 +54,9 @@ impl OverlayFs {
     /// Mount the overlay filesystem.
     #[cfg(target_os = "linux")]
     pub fn mount(&self) -> BockResult<()> {
+        use rustix::mount::{MountFlags, mount};
+        use std::ffi::CString;
+
         self.create_dirs()?;
 
         let lower = self
@@ -76,9 +79,23 @@ impl OverlayFs {
             "Mounting overlayfs"
         );
 
-        // Use rustix for mounting
-        // TODO: Implement using rustix::mount
+        let fstype = CString::new("overlay").unwrap();
+        let options_c =
+            CString::new(options.as_str()).map_err(|_| bock_common::BockError::Config {
+                message: "Invalid overlay options (contains null byte)".to_string(),
+            })?;
 
+        // Mount using rustix
+        mount(
+            "overlay",            // source
+            &self.merged_dir,     // target
+            fstype.as_c_str(),    // filesystem type
+            MountFlags::empty(),  // flags
+            options_c.as_c_str(), // data/options
+        )
+        .map_err(|e| bock_common::BockError::Io(e.into()))?;
+
+        tracing::info!(merged = %self.merged_dir.display(), "OverlayFS mounted successfully");
         Ok(())
     }
 
@@ -90,10 +107,24 @@ impl OverlayFs {
     }
 
     /// Unmount the overlay filesystem.
+    #[cfg(target_os = "linux")]
     pub fn unmount(&self) -> BockResult<()> {
+        use rustix::mount::{UnmountFlags, unmount};
+
         tracing::debug!(merged = %self.merged_dir.display(), "Unmounting overlayfs");
-        // TODO: Implement unmount
+
+        unmount(&self.merged_dir, UnmountFlags::DETACH)
+            .map_err(|e| bock_common::BockError::Io(e.into()))?;
+
+        tracing::info!(merged = %self.merged_dir.display(), "OverlayFS unmounted successfully");
         Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn unmount(&self) -> BockResult<()> {
+        Err(bock_common::BockError::Unsupported {
+            feature: "overlayfs".to_string(),
+        })
     }
 
     /// Get the mount options string.

@@ -3,8 +3,10 @@
 //! This module provides utilities for managing Linux cgroups v2.
 
 mod manager;
+pub mod v1;
 
 pub use manager::CgroupManager;
+pub use v1::{CgroupV1Manager, CgroupVersion, MemoryPressure, MemoryPressureMonitor, MemoryUsage};
 
 /// Cgroup resource configuration.
 #[derive(Debug, Clone, Default)]
@@ -53,12 +55,16 @@ pub struct PidsResources {
 }
 
 /// Block I/O resource limits.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct IoResources {
     /// I/O weight (1-10000, default: 100).
     pub weight: Option<u64>,
-    /// Read BPS limit per device.
+    /// Read BPS limit per device (device path, limit).
     pub read_bps: Vec<(String, u64)>,
-    /// Write BPS limit per device.
+    /// Write BPS limit per device (device path, limit).
     pub write_bps: Vec<(String, u64)>,
+    /// Read IOPS limit per device (device path, limit).
+    pub read_iops: Vec<(String, u64)>,
+    /// Write IOPS limit per device (device path, limit).
+    pub write_iops: Vec<(String, u64)>,
 }

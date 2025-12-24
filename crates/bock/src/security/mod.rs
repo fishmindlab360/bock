@@ -6,11 +6,15 @@
 //! - AppArmor profiles
 //! - SELinux labels
 
+mod apparmor;
 mod capabilities;
 mod seccomp;
+mod selinux;
 
+pub use apparmor::AppArmorProfile;
 pub use capabilities::CapabilitySet;
 pub use seccomp::SeccompFilter;
+pub use selinux::SELinuxContext;
 
 /// Security configuration for a container.
 #[derive(Debug, Clone, Default)]

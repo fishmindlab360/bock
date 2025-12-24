@@ -171,7 +171,45 @@ impl CgroupManager {
             tracing::debug!(weight, "Set io.weight");
         }
 
-        // TODO: Implement per-device limits
+        // Apply per-device read/write limits using io.max
+        // Format: "MAJOR:MINOR rbps=LIMIT wbps=LIMIT riops=max wiops=max"
+        for (device, limit) in &io.read_bps {
+            let value = format!("{} rbps={}", device, limit);
+            if let Err(e) = std::fs::write(self.path.join("io.max"), &value) {
+                tracing::warn!(device, limit, error = %e, "Failed to set read BPS limit");
+            } else {
+                tracing::debug!(device, limit, "Set io.max read BPS");
+            }
+        }
+
+        for (device, limit) in &io.write_bps {
+            let value = format!("{} wbps={}", device, limit);
+            if let Err(e) = std::fs::write(self.path.join("io.max"), &value) {
+                tracing::warn!(device, limit, error = %e, "Failed to set write BPS limit");
+            } else {
+                tracing::debug!(device, limit, "Set io.max write BPS");
+            }
+        }
+
+        // Apply IOPS limits if provided
+        for (device, limit) in &io.read_iops {
+            let value = format!("{} riops={}", device, limit);
+            if let Err(e) = std::fs::write(self.path.join("io.max"), &value) {
+                tracing::warn!(device, limit, error = %e, "Failed to set read IOPS limit");
+            } else {
+                tracing::debug!(device, limit, "Set io.max read IOPS");
+            }
+        }
+
+        for (device, limit) in &io.write_iops {
+            let value = format!("{} wiops={}", device, limit);
+            if let Err(e) = std::fs::write(self.path.join("io.max"), &value) {
+                tracing::warn!(device, limit, error = %e, "Failed to set write IOPS limit");
+            } else {
+                tracing::debug!(device, limit, "Set io.max write IOPS");
+            }
+        }
+
         Ok(())
     }
 

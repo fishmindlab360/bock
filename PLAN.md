@@ -10,10 +10,10 @@ This document tracks the complete development status of the Bock container ecosy
 
 | Component | Status | Completion |
 |-----------|--------|------------|
-| **bock** (Container Runtime) | 🚧 In Development | ~60% |
+| **bock** (Container Runtime) | 🚧 In Development | ~80% |
 | **bock-common** | ✅ Complete | 100% |
 | **bock-oci** | ✅ Complete | 100% |
-| **bock-network** | 🚧 In Development | ~40% |
+| **bock-network** | 🚧 In Development | ~75% |
 | **bock-image** | 📋 Planned | ~10% |
 | **bock-runtime** (Image Builder) | 📋 Planned | ~20% |
 | **bockrose** (Orchestrator) | 📋 Planned | ~25% |
@@ -69,6 +69,9 @@ This document tracks the complete development status of the Bock container ecosy
 - [x] `pivot_root()` - Change root filesystem
 - [x] Essential directory creation (`/proc`, `/sys`, `/dev`, etc.)
 - [x] Basic symlink setup
+- [x] `OverlayFs::mount()` / `unmount()` - OverlayFS using rustix
+- [x] Device nodes (`/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/tty`, `/dev/console`)
+- [x] `mount_tmpfs()` - tmpfs mounts for `/dev/shm`, `/run`
 
 #### Process Execution
 - [x] `spawn_process()` - Spawn container init process
@@ -105,6 +108,11 @@ This document tracks the complete development status of the Bock container ecosy
 - [x] `VethPair::create()` - Create veth pair using `ip` command
 - [x] `VethPair::move_to_netns()` - Move interface to container namespace
 - [x] `VethPair::delete()` - Clean up veth pair
+- [x] `BridgeManager::create()` / `delete()` - Network bridge management
+- [x] `BridgeManager::add_interface()` / `set_ip()` - Bridge configuration
+- [x] Network namespace operations (`create_netns`, `delete_netns`, `enter_netns`)
+- [x] `PortMapper` - iptables NAT port forwarding (DNAT/MASQUERADE)
+- [x] `enable_ip_forwarding()` / `setup_forward_rules()`
 
 ### Testing & Quality
 - [x] Unit tests for `Container::create`
@@ -120,23 +128,23 @@ This document tracks the complete development status of the Bock container ecosy
 ## 🚧 In Progress
 
 ### Container Runtime (`bock`)
-- [ ] `Container::wait()` - Wait for container exit
-- [ ] `Container::pause()` / `resume()` - Using cgroup freeze
-- [ ] `Container::exec()` - Execute command in running container
-- [ ] Container hooks (prestart, poststart, poststop)
-- [ ] Console/TTY support
+- [x] `Container::wait()` - Wait for container exit (with exit code handling)
+- [x] `Container::pause()` / `resume()` - Using cgroup freeze/unfreeze
+- [x] `Container::exec()` - Execute command in running container namespaces
+- [x] Container hooks (prestart, poststart, poststop with timeout)
+- [x] Console/TTY support (`PtyPair` with rustix)
 
-### Filesystem
-- [ ] OverlayFS support (`setup_overlay()`)
-- [ ] Proper `/dev` device nodes
-- [ ] tmpfs mounts for `/dev/shm`, `/run`
+### Security Implementation
+- [x] `CapabilitySet::apply()` - Drop/add capabilities
+- [x] `set_no_new_privs()` - Prevent privilege escalation
+- [x] `apply_security()` - Unified security application
+- [x] Seccomp BPF filter compilation (using seccompiler)
 
-### Network
-- [ ] `BridgeManager::create()` - Create network bridge
-- [ ] `BridgeManager::add_interface()` - Connect container to bridge
-- [ ] Network namespace setup (`create_netns()`, `enter_netns()`, `delete_netns()`)
-- [ ] IP address assignment
-- [ ] Port mapping/forwarding
+### Init Process
+- [x] `ContainerInit` - Proper PID 1 implementation
+- [x] Signal handling (SIGCHLD, SIGTERM, SIGINT)
+- [x] Zombie process reaping
+- [x] Graceful shutdown
 
 ---
 
@@ -145,26 +153,36 @@ This document tracks the complete development status of the Bock container ecosy
 ### Container Runtime (`bock`)
 
 #### Process Execution
-- [ ] PTY allocation (`exec/pty.rs`)
-- [ ] Init process (`exec/init.rs`) - Proper PID 1 with signal handling
-- [ ] Stdio handling (attach/detach)
+- [x] PTY allocation (`PtyPair::new()`, `set_size()`, `setup_stdio()`)
+- [x] Init process (`ContainerInit`) - Proper PID 1 with signal handling
+- [ ] Stdio handling improvements (attach/detach modes)
+- [x] Console socket support for remote terminal attach (`ConsoleSocket`)
 
 #### Filesystem
-- [ ] OverlayFS mount implementation (`filesystem/overlay.rs`)
-- [ ] Bind mounts
-- [ ] Volume mounts
-- [ ] Read-only filesystem support
+- [x] OverlayFS mount implementation
+- [x] Bind mounts with proper propagation (`bind_mount`, `make_private`, `make_shared`)
+- [x] Volume mounts (`VolumeManager` with create/get/remove/mount)
+- [x] Read-only filesystem support (`remount_readonly`)
+- [ ] Copy-on-write layer management
 
 #### Security (Implementation)
-- [ ] Seccomp filter application
-- [ ] Capability dropping
+- [x] Seccomp filter application (compile BPF with seccompiler)
+- [x] Capability dropping (using `caps` crate)
 - [ ] AppArmor profile loading
 - [ ] SELinux label application
-- [ ] `no_new_privs` enforcement
+- [x] `no_new_privs` enforcement
+- [ ] User namespace UID/GID mapping improvements
 
 #### Cgroups
-- [ ] Per-device I/O limits
+- [x] Per-device I/O limits (`io.max` with BPS/IOPS)
 - [ ] Cgroup v1 fallback support
+- [ ] Memory pressure monitoring
+
+#### Networking
+- [ ] DNS server for container name resolution
+- [ ] IPv6 support
+- [ ] Macvlan/IPvlan network modes
+- [ ] Network policies/firewalling
 
 ---
 
@@ -329,11 +347,14 @@ crates/
 - [x] Basic networking (veth pairs)
 
 ### Milestone 2: Full Container Runtime (Current)
-- [ ] OverlayFS
+- [x] OverlayFS
 - [ ] Volume mounts
-- [ ] Security hardening
-- [ ] `exec` into running containers
-- [ ] Console/TTY support
+- [ ] Security hardening (seccomp, capabilities)
+- [x] `exec` into running containers
+- [x] Console/TTY support
+- [x] Port mapping/forwarding
+- [x] Container pause/resume
+- [x] OCI lifecycle hooks
 
 ### Milestone 3: Image Builder
 - [ ] Bockfile parsing and execution
