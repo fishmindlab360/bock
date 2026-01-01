@@ -103,7 +103,7 @@ pub enum Commands {
         timestamps: bool,
 
         /// Number of lines to show
-        #[arg(short, long)]
+        #[arg(short = 'n', long)]
         tail: Option<u64>,
 
         /// Service name
@@ -282,6 +282,7 @@ impl Cli {
             }
 
             Commands::Ps { all: _, quiet } => {
+                orchestrator.refresh_state().await?;
                 let services = orchestrator.list_services();
                 if quiet {
                     for s in services {
@@ -292,11 +293,28 @@ impl Cli {
                 } else {
                     let rows: Vec<ServiceRow> = services
                         .iter()
-                        .map(|s| ServiceRow {
-                            name: s.name.clone(),
-                            image: "".to_string(),
-                            status: format!("{:?}", s.status),
-                            ports: "".to_string(),
+                        .map(|s| {
+                            // Look up service spec for image and ports
+                            let spec_info = orchestrator.get_service_spec(&s.name);
+                            let (image, ports) = match spec_info {
+                                Some(spec) => (
+                                    spec.image.clone().unwrap_or_else(|| {
+                                        if spec.build.is_some() {
+                                            "<built>".to_string()
+                                        } else {
+                                            "".to_string()
+                                        }
+                                    }),
+                                    spec.ports.join(", "),
+                                ),
+                                None => ("".to_string(), "".to_string()),
+                            };
+                            ServiceRow {
+                                name: s.name.clone(),
+                                image,
+                                status: format!("{:?}", s.status),
+                                ports,
+                            }
                         })
                         .collect();
 
@@ -322,7 +340,20 @@ impl Cli {
                         .logs(&s, follow, tail.unwrap_or(0) as usize)
                         .await?;
                 } else {
-                    println!("Please specify a service name");
+                    let services = orchestrator.list_services();
+                    for s in services {
+                        println!("--- Logs for service: {} ---", s.name);
+                        // Disable follow for multi-service logs to avoid interleaving complexity for now
+                        // or just error if follow is requested?
+                        // User expectation: "Logs by default shows all logs"
+                        // Simplest: just cat all of them sequentially.
+                        if let Err(e) = orchestrator
+                            .logs(&s.name, false, tail.unwrap_or(0) as usize)
+                            .await
+                        {
+                            println!("Error getting logs for {}: {}", s.name, e);
+                        }
+                    }
                 }
                 Ok(())
             }

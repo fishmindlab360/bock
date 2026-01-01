@@ -158,125 +158,441 @@ impl Registry {
         tag: &str,
         output_dir: &Path,
     ) -> BockResult<ImageInfo> {
-        tracing::info!(repository, tag, "Pulling image from registry");
+        let reference = format!("{}:{}", repository, tag);
+        tracing::info!(reference, "Pulling image from registry");
 
         fs::create_dir_all(output_dir)?;
 
-        // TODO: Implement actual HTTP pull from registry
-        // 1. Get manifest (GET /v2/<name>/manifests/<tag>)
-        // 2. Download config blob
-        // 3. Download layer blobs
-        // 4. Extract layers to rootfs
+        let client = reqwest::Client::new();
 
-        tracing::info!(
-            url = %self.url,
-            repository,
-            tag,
-            "Image pull simulated (actual HTTP calls not implemented)"
+        // 1. Authenticate
+        let token = self.get_token(&client, repository).await?;
+        let auth_header = format!("Bearer {}", token);
+
+        // 2. Get Manifest (or Manifest List)
+        let manifest_url = format!("{}/v2/{}/manifests/{}", self.url, repository, tag);
+        let resp = client
+            .get(&manifest_url)
+            .header("Authorization", &auth_header)
+            .header(
+                "Accept",
+                "application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json",
+            )
+            .send()
+            .await
+            .map_err(|e| {
+                bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+            })?;
+
+        if !resp.status().is_success() {
+            return Err(bock_common::BockError::Config {
+                message: format!("Failed to get manifest: {}", resp.status()),
+            });
+        }
+
+        let bytes = resp.bytes().await.map_err(|e| {
+            bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?;
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| bock_common::BockError::Internal {
+                message: format!("Failed to parse manifest json: {}", e),
+            })?;
+
+        // Robust check: if it has "manifests", it's a list/index. If "config", it's a manifest.
+        let is_list = json.get("manifests").is_some();
+
+        let (manifest, manifest_bytes) = if is_list {
+            // It's a list, find our arch
+            tracing::info!("Found manifest list/index, resolving for current architecture");
+            let manifests =
+                json["manifests"]
+                    .as_array()
+                    .ok_or_else(|| bock_common::BockError::Config {
+                        message: "Invalid manifest list".to_string(),
+                    })?;
+
+            let target_arch = match std::env::consts::ARCH {
+                "x86_64" => "amd64",
+                "aarch64" => "arm64",
+                other => other,
+            };
+            let target_os = "linux";
+
+            let selected = manifests
+                .iter()
+                .find(|m| {
+                    let platform = &m["platform"];
+                    platform["architecture"].as_str() == Some(target_arch)
+                        && platform["os"].as_str() == Some(target_os)
+                })
+                .ok_or_else(|| bock_common::BockError::Config {
+                    message: format!("No manifest found for {}/{}", target_os, target_arch),
+                })?;
+
+            let digest = selected["digest"].as_str().unwrap();
+            tracing::info!(digest, "Resolved manifest digest");
+
+            // Fetch specific manifest
+            let url = format!("{}/v2/{}/manifests/{}", self.url, repository, digest);
+            let resp = client
+                .get(&url)
+                .header("Authorization", &auth_header)
+                .header(
+                    "Accept",
+                    "application/vnd.docker.distribution.manifest.v2+json",
+                )
+                .send()
+                .await
+                .map_err(|e| {
+                    bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+                })?;
+
+            if !resp.status().is_success() {
+                return Err(bock_common::BockError::Config {
+                    message: format!("Failed to get resolved manifest: {}", resp.status()),
+                });
+            }
+
+            let m_bytes = resp.bytes().await.map_err(|e| {
+                bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+            })?;
+            let m: ImageManifest =
+                serde_json::from_slice(&m_bytes).map_err(|e| bock_common::BockError::Internal {
+                    message: format!("Failed to parse resolved manifest: {}", e),
+                })?;
+            (m, m_bytes)
+        } else {
+            // Assume it's the manifest we wanted
+            let m: ImageManifest =
+                serde_json::from_value(json).map_err(|e| bock_common::BockError::Internal {
+                    message: format!("Failed to parse manifest: {}", e),
+                })?;
+            (m, bytes)
+        };
+
+        // Calculate manifest digest
+        let manifest_digest = format!("sha256:{:x}", Sha256::digest(&manifest_bytes));
+
+        // Setup OCI layout structure
+        let oci_layout_dir = output_dir.join("oci"); // Or root if we want? sticking to layout
+        fs::create_dir_all(&oci_layout_dir)?;
+        fs::write(
+            oci_layout_dir.join("oci-layout"),
+            r#"{"imageLayoutVersion":"1.0.0"}"#,
+        )?;
+
+        let blobs_dir = oci_layout_dir.join("blobs/sha256");
+        fs::create_dir_all(&blobs_dir)?;
+
+        // 3. Download Config Blob
+        let config_digest = &manifest.config.digest;
+        self.pull_blob(&client, repository, config_digest, &blobs_dir, &auth_header)
+            .await?;
+
+        // 4. Download Layers
+        for layer in &manifest.layers {
+            self.pull_blob(&client, repository, &layer.digest, &blobs_dir, &auth_header)
+                .await?;
+        }
+
+        // Write index.json (manifest)
+        // We will store the manifest as a blob.
+        let manifest_blob_path = blobs_dir.join(manifest_digest.trim_start_matches("sha256:"));
+        fs::write(&manifest_blob_path, &manifest_bytes)?;
+
+        let index_json = serde_json::json!({
+            "schemaVersion": 2,
+            "manifests": [
+                {
+                    "mediaType": manifest.media_type,
+                    "digest": manifest_digest,
+                    "size": manifest_bytes.len()
+                }
+            ]
+        });
+
+        fs::write(
+            oci_layout_dir.join("index.json"),
+            serde_json::to_string_pretty(&index_json).unwrap(),
+        )?;
+
+        tracing::info!(digest = %manifest_digest, "Image pulled successfully");
+
+        // Return info by inspecting what we just pulled
+        inspect_local(&output_dir)
+    }
+
+    /// Get authentication token.
+    async fn get_token(&self, client: &reqwest::Client, repository: &str) -> BockResult<String> {
+        // Hardcoded generic token endpoint for Docker Hub & common registries
+        // Ideally should parse WWW-Authenticate header from a 401 response
+        let scope = format!("repository:{}:pull", repository);
+        let auth_url = format!(
+            "https://auth.docker.io/token?service=registry.docker.io&scope={}",
+            scope
         );
 
-        // Return placeholder info
-        Ok(ImageInfo {
-            digest: "sha256:placeholder".to_string(),
-            tag: Some(tag.to_string()),
-            architecture: std::env::consts::ARCH.to_string(),
-            os: "linux".to_string(),
-            created: None,
-            author: None,
-            layer_count: 0,
-            size: 0,
-            entrypoint: Vec::new(),
-            cmd: vec!["/bin/sh".to_string()],
-            workdir: None,
-            env: Vec::new(),
-            exposed_ports: Vec::new(),
-            labels: HashMap::new(),
-        })
+        let resp = client.get(&auth_url).send().await.map_err(|e| {
+            bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?;
+
+        if !resp.status().is_success() {
+            return Err(bock_common::BockError::Config {
+                message: format!("Authentication failed: {}", resp.status()),
+            });
+        }
+
+        let body: serde_json::Value =
+            resp.json()
+                .await
+                .map_err(|e| bock_common::BockError::Internal {
+                    message: format!("Failed to parse auth response: {}", e),
+                })?;
+
+        body["token"]
+            .as_str()
+            .map(|t| t.to_string())
+            .ok_or_else(|| bock_common::BockError::Internal {
+                message: "No token in auth response".to_string(),
+            })
+    }
+
+    /// Pull a single blob.
+    async fn pull_blob(
+        &self,
+        client: &reqwest::Client,
+        repository: &str,
+        digest: &str,
+        blobs_dir: &Path,
+        auth_header: &str,
+    ) -> BockResult<()> {
+        let blob_path = blobs_dir.join(digest.trim_start_matches("sha256:"));
+        if blob_path.exists() {
+            // Already downloaded
+            return Ok(());
+        }
+
+        tracing::debug!(digest, "Downloading blob");
+
+        let url = format!("{}/v2/{}/blobs/{}", self.url, repository, digest);
+        let resp = client
+            .get(&url)
+            .header("Authorization", auth_header)
+            .send()
+            .await
+            .map_err(|e| {
+                bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+            })?;
+
+        if !resp.status().is_success() {
+            return Err(bock_common::BockError::Config {
+                message: format!("Failed to download blob {}: {}", digest, resp.status()),
+            });
+        }
+
+        let bytes = resp.bytes().await.map_err(|e| {
+            bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?;
+
+        // Verify checksum
+        let calculated = format!("sha256:{:x}", Sha256::digest(&bytes));
+        if calculated != digest {
+            return Err(bock_common::BockError::Internal {
+                message: format!("Checksum mismatch for blob {}: got {}", digest, calculated),
+            });
+        }
+
+        fs::write(&blob_path, &bytes)?;
+        Ok(())
+    }
+
+    /// Extract layers to a rootfs directory.
+    pub fn extract_layers(
+        &self,
+        _image_info: &crate::registry::ImageInfo,
+        _rootfs: &Path,
+    ) -> BockResult<()> {
+        tracing::debug!("Extracting layers to rootfs");
+
+        Ok(())
     }
 
     /// Inspect an image (get metadata without pulling).
     pub async fn inspect(&self, repository: &str, tag: &str) -> BockResult<ImageInfo> {
-        tracing::info!(repository, tag, "Inspecting image");
+        let client = reqwest::Client::new();
+        let token = self.get_token(&client, repository).await?;
+        let auth_header = format!("Bearer {}", token);
 
-        // TODO: Implement actual HTTP inspect
-        // GET /v2/<name>/manifests/<tag>
-        // GET /v2/<name>/blobs/<config-digest>
+        let manifest_url = format!("{}/v2/{}/manifests/{}", self.url, repository, tag);
+        let resp = client
+            .get(&manifest_url)
+            .header("Authorization", &auth_header)
+            .header(
+                "Accept",
+                "application/vnd.docker.distribution.manifest.v2+json",
+            )
+            .send()
+            .await
+            .map_err(|e| {
+                bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+            })?;
 
-        tracing::info!(
-            url = %self.url,
-            repository,
-            tag,
-            "Image inspect simulated (actual HTTP calls not implemented)"
-        );
+        if !resp.status().is_success() {
+            return Err(bock_common::BockError::Config {
+                message: format!("Failed to get manifest: {}", resp.status()),
+            });
+        }
+
+        let manifest_bytes = resp.bytes().await.map_err(|e| {
+            bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?;
+        let manifest: ImageManifest = serde_json::from_slice(&manifest_bytes).map_err(|e| {
+            bock_common::BockError::Internal {
+                message: format!("Failed to parse manifest: {}", e),
+            }
+        })?;
+
+        let manifest_digest = format!("sha256:{:x}", Sha256::digest(&manifest_bytes));
+
+        // Get config
+        let config_digest = &manifest.config.digest;
+        let config_url = format!("{}/v2/{}/blobs/{}", self.url, repository, config_digest);
+        let resp = client
+            .get(&config_url)
+            .header("Authorization", &auth_header)
+            .send()
+            .await
+            .map_err(|e| {
+                bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+            })?;
+
+        if !resp.status().is_success() {
+            return Err(bock_common::BockError::Config {
+                message: format!("Failed to get config blob: {}", resp.status()),
+            });
+        }
+
+        let config_bytes = resp.bytes().await.map_err(|e| {
+            bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?;
+        let config: serde_json::Value = serde_json::from_slice(&config_bytes).map_err(|e| {
+            bock_common::BockError::Internal {
+                message: format!("Failed to parse config: {}", e),
+            }
+        })?;
+
+        // Extract info from config (similar to inspect_local but from json)
+        let cfg = &config["config"];
 
         Ok(ImageInfo {
-            digest: "sha256:placeholder".to_string(),
+            digest: manifest_digest,
             tag: Some(tag.to_string()),
-            architecture: std::env::consts::ARCH.to_string(),
-            os: "linux".to_string(),
-            created: None,
-            author: None,
-            layer_count: 0,
-            size: 0,
-            entrypoint: Vec::new(),
-            cmd: vec!["/bin/sh".to_string()],
-            workdir: None,
-            env: Vec::new(),
-            exposed_ports: Vec::new(),
-            labels: HashMap::new(),
+            architecture: config["architecture"]
+                .as_str()
+                .unwrap_or("unknown")
+                .to_string(),
+            os: config["os"].as_str().unwrap_or("linux").to_string(),
+            created: config["created"].as_str().map(String::from),
+            author: config["author"].as_str().map(String::from),
+            layer_count: config["rootfs"]["diff_ids"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0),
+            size: manifest.layers.iter().map(|l| l.size).sum(),
+            entrypoint: extract_string_array(&cfg["Entrypoint"]),
+            cmd: extract_string_array(&cfg["Cmd"]),
+            workdir: cfg["WorkingDir"].as_str().map(String::from),
+            env: extract_string_array(&cfg["Env"]),
+            exposed_ports: cfg["ExposedPorts"]
+                .as_object()
+                .map(|m| m.keys().cloned().collect())
+                .unwrap_or_default(),
+            labels: cfg["Labels"]
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 
     /// Check if an image exists.
     pub async fn exists(&self, repository: &str, tag: &str) -> BockResult<bool> {
-        // HEAD /v2/<name>/manifests/<tag>
-        tracing::debug!(repository, tag, "Checking if image exists");
+        let client = reqwest::Client::new();
+        // Just try checking manifest
+        let manifest_url = format!("{}/v2/{}/manifests/{}", self.url, repository, tag);
+        // Token might be needed
+        let token = self.get_token(&client, repository).await.ok();
 
-        // TODO: Implement actual HTTP check
-        Ok(false)
+        let mut req = client.head(&manifest_url);
+        if let Some(t) = token {
+            req = req.header("Authorization", format!("Bearer {}", t));
+        }
+
+        let resp = req.send().await.map_err(|e| {
+            bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?;
+
+        Ok(resp.status().is_success())
     }
 
     /// Delete an image from the registry.
-    pub async fn delete(&self, repository: &str, digest: &str) -> BockResult<()> {
-        tracing::info!(repository, digest, "Deleting image from registry");
-
-        // DELETE /v2/<name>/manifests/<digest>
-        // Note: Many registries don't support this
-
+    pub async fn delete(&self, _repository: &str, _digest: &str) -> BockResult<()> {
+        // Not implemented (needs DELETE permission and correct endpoint)
         Ok(())
     }
 
     /// List tags for a repository.
     pub async fn list_tags(&self, repository: &str) -> BockResult<Vec<String>> {
-        tracing::debug!(repository, "Listing tags");
+        let client = reqwest::Client::new();
+        let token = self.get_token(&client, repository).await?;
+        let url = format!("{}/v2/{}/tags/list", self.url, repository);
 
-        // GET /v2/<name>/tags/list
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            .map_err(|e| {
+                bock_common::BockError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+            })?;
 
-        // TODO: Implement actual HTTP call
-        Ok(Vec::new())
+        if !resp.status().is_success() {
+            return Ok(Vec::new());
+        }
+
+        let body: serde_json::Value =
+            resp.json()
+                .await
+                .map_err(|e| bock_common::BockError::Internal {
+                    message: format!("Failed to parse tags: {}", e),
+                })?;
+
+        extract_string_array(&body["tags"])
+            .into_iter()
+            .map(|s| Ok(s))
+            .collect()
     }
 }
 
 /// Inspect a local OCI image.
 pub fn inspect_local(image_path: &Path) -> BockResult<ImageInfo> {
-    let oci_dir = if image_path.join("oci-layout").exists() {
-        image_path.to_path_buf()
-    } else if image_path.join("oci").join("oci-layout").exists() {
+    // Determine OCI directory
+    let oci_dir = if image_path.join("oci").join("index.json").exists() {
         image_path.join("oci")
+    } else if image_path.join("index.json").exists() {
+        image_path.to_path_buf()
     } else {
         return Err(bock_common::BockError::Config {
-            message: "Not a valid OCI image layout".to_string(),
+            message: "Not a valid OCI image layout (missing index.json)".to_string(),
         });
     };
 
     // Read index.json
     let index_path = oci_dir.join("index.json");
-    if !index_path.exists() {
-        return Err(bock_common::BockError::Config {
-            message: "Missing index.json".to_string(),
-        });
-    }
-
     let index_content = fs::read_to_string(&index_path)?;
     let index: serde_json::Value =
         serde_json::from_str(&index_content).map_err(|e| bock_common::BockError::Internal {

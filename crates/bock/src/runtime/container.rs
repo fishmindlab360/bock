@@ -18,7 +18,20 @@ use super::config::RuntimeConfig;
 use super::state::StateManager;
 use crate::runtime::RuntimeEvent;
 
+use std::collections::hash_map::DefaultHasher;
 use std::ffi::CString;
+use std::hash::{Hash, Hasher};
+
+/// Generate unique veth interface names based on container ID hash.
+/// Returns (host_interface, container_interface) tuple.
+fn generate_veth_names(id: &str) -> (String, String) {
+    let mut hasher = DefaultHasher::new();
+    id.hash(&mut hasher);
+    let hash = hasher.finish();
+    // Use 7 hex chars for uniqueness (veth + 7 = 11 chars, under 15 char limit)
+    let suffix = format!("{:07x}", hash & 0x0FFFFFFF);
+    (format!("veth{}", suffix), format!("ceth{}", suffix))
+}
 
 /// Namespace types to enter when executing in a container.
 const NAMESPACE_TYPES: &[(&str, libc::c_int)] = &[
@@ -166,6 +179,9 @@ pub struct NetworkConfig {
     pub ip: String,
     /// Gateway address (e.g., "172.16.0.1").
     pub gateway: String,
+    /// Port mappings (host_port:container_port).
+    #[serde(default)]
+    pub ports: Vec<String>,
 }
 
 /// Container statistics.
@@ -251,6 +267,13 @@ impl Container {
                 id: container.id.to_string(),
                 timestamp: chrono::Utc::now().timestamp(),
             });
+
+        // Transition to Created status (allows starting)
+        {
+            let mut state = container.state.write();
+            state.status = bock_oci::state::ContainerStatus::Created;
+        }
+        container.save_state()?;
 
         Ok(container)
     }
@@ -398,10 +421,11 @@ impl Container {
         let rootfs_clone = rootfs.clone();
         let ns_manager = self.namespace.clone();
 
-        // Convert to RawFd for closure capture
-        use rustix::fd::AsRawFd;
-        let c_read_fd = child_read.as_raw_fd();
-        let c_write_fd = child_write.as_raw_fd();
+        // Convert child pipe ends to raw FDs for closure capture
+        // Use into_raw_fd() to transfer ownership - child process will manage these FDs
+        use rustix::fd::IntoRawFd;
+        let c_read_fd = child_read.into_raw_fd();
+        let c_write_fd = child_write.into_raw_fd();
 
         // Prepare log files
         let container_dir = self.config.paths.container(self.id.as_str());
@@ -416,8 +440,130 @@ impl Container {
         let stdout = std::process::Stdio::from(stdout_file);
         let stderr = std::process::Stdio::from(stderr_file);
 
-        // Spawn process with setup hook
-        let pid = crate::exec::process::spawn_process(
+        // Clone data needed for background handshake task
+        let namespace_for_task = self.namespace.clone();
+        let network_config_for_task = self.network_config.clone();
+        let container_id_for_task = self.id.clone();
+
+        // Convert parent pipe ends to raw FDs for the handshake task
+        let p_read_fd = parent_read.into_raw_fd();
+        let p_write_fd = parent_write.into_raw_fd();
+
+        // Start parent handshake in background BEFORE spawn_process
+        // This breaks the deadlock: parent handshake runs concurrently with child setup
+        let handshake_handle = tokio::task::spawn_blocking(move || -> BockResult<u32> {
+            use std::io::{Read, Write};
+            use std::os::unix::io::FromRawFd;
+
+            let mut p_read = unsafe { std::fs::File::from_raw_fd(p_read_fd) };
+            let mut p_write = unsafe { std::fs::File::from_raw_fd(p_write_fd) };
+
+            tracing::info!("Parent handshake: waiting for child PID...");
+
+            // 1. Read PID from child (child sends its PID as 4-byte u32 LE)
+            let mut pid_buf = [0u8; 4];
+            p_read
+                .read_exact(&mut pid_buf)
+                .map_err(|e| bock_common::BockError::Internal {
+                    message: format!("Failed to read child PID: {}", e),
+                })?;
+            let pid = u32::from_le_bytes(pid_buf);
+
+            tracing::info!(
+                "Parent handshake: got child PID {}. Writing ID maps...",
+                pid
+            );
+
+            // 2. Write ID mappings
+            if let Some(ns) = &namespace_for_task {
+                ns.write_uid_map(pid)?;
+                ns.write_gid_map(pid)?;
+            }
+
+            tracing::info!("Parent handshake: ID maps written. Setting up network...");
+
+            // 3. Network setup (async operations - use Handle::block_on)
+            let rt_handle = tokio::runtime::Handle::current();
+            let (host_if, guest_if) = generate_veth_names(container_id_for_task.as_str());
+
+            rt_handle.block_on(async {
+                // Setup bridge and NAT (idempotent)
+                bock_network::NatManager::setup_network().await?;
+
+                // Clean up any existing interface with same name (from failed previous run)
+                let cleanup_veth = bock_network::VethPair {
+                    host: host_if.clone(),
+                    container: guest_if.clone(),
+                };
+                let _ = cleanup_veth.delete().await; // Ignore errors
+
+                tracing::info!("Creating veth pair {}/{}...", host_if, guest_if);
+                let veth = bock_network::VethPair::create(&host_if, &guest_if).await?;
+
+                // Attach host-side to bridge
+                tracing::info!(
+                    "Attaching {} to bridge {}...",
+                    host_if,
+                    bock_network::DEFAULT_BRIDGE
+                );
+                let bridge = bock_network::BridgeManager::get(bock_network::DEFAULT_BRIDGE)?;
+                bridge.add_interface(&host_if).await?;
+
+                // Now bring host interface up
+                veth.bring_host_up().await?;
+
+                // Move container-side to netns
+                tracing::info!("Moving {} to netns {}...", guest_if, pid);
+                veth.move_to_netns(pid).await?;
+
+                Ok::<(), bock_common::BockError>(())
+            })?;
+
+            // 4. Configure network interfaces
+            if let Some(net_config) = &network_config_for_task {
+                tracing::info!("Configuring network interfaces via nsenter...");
+                let pid_str = pid.to_string();
+
+                let run_in_netns = |args: &[&str]| -> BockResult<()> {
+                    let status = std::process::Command::new("nsenter")
+                        .arg("-t")
+                        .arg(&pid_str)
+                        .arg("-n")
+                        .args(args)
+                        .status()
+                        .map_err(|e| bock_common::BockError::Internal {
+                            message: format!("nsenter failed: {}", e),
+                        })?;
+                    if !status.success() {
+                        return Err(bock_common::BockError::Internal {
+                            message: format!("netns command failed: {:?}", args),
+                        });
+                    }
+                    Ok(())
+                };
+
+                run_in_netns(&["ip", "link", "set", "lo", "up"])?;
+                run_in_netns(&["ip", "link", "set", &guest_if, "up"])?;
+                run_in_netns(&["ip", "addr", "add", &net_config.ip, "dev", &guest_if])?;
+                run_in_netns(&["ip", "route", "add", "default", "via", &net_config.gateway])?;
+            }
+
+            tracing::info!("Parent handshake: network configured. Signaling child DONE...");
+
+            // 5. Signal child to proceed
+            p_write
+                .write_all(b"DONE")
+                .map_err(|e| bock_common::BockError::Internal {
+                    message: format!("Failed to signal child: {}", e),
+                })?;
+
+            tracing::info!("Parent handshake complete.");
+            Ok(pid)
+        });
+
+        // Spawn child process - this will now unblock because parent handshake runs concurrently
+        tracing::info!("Spawning container process...");
+        let _spawn_pid = crate::exec::process::spawn_process(
             &args,
             &env,
             Some(stdout),
@@ -436,106 +582,155 @@ impl Container {
                     })?;
                 }
 
-                // 2. Signal parent "Unshared"
-                c_write.write_all(b"UNSHARED")?;
+                // 2. Send our PID to parent (instead of just "UNSHARED")
+                let self_pid = std::process::id();
+                c_write.write_all(&self_pid.to_le_bytes())?;
 
-                // 3. Wait for parent "Mappings Written"
+                // 3. Wait for parent "DONE"
                 let mut buf = [0u8; 4];
                 c_read.read_exact(&mut buf)?;
 
-                // 4. Pivot root
+                // 4. Pivot root setup
+                // First, make the entire mount tree private to prevent propagation
+                // This is essential after CLONE_NEWNS to isolate container mounts
+                use std::ffi::CString;
+                let root = CString::new("/").unwrap();
+                unsafe {
+                    // MS_REC | MS_PRIVATE = make all mounts private recursively
+                    if libc::mount(
+                        std::ptr::null(),
+                        root.as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_REC | libc::MS_PRIVATE,
+                        std::ptr::null(),
+                    ) != 0
+                    {
+                        let err = std::io::Error::last_os_error();
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("Failed to make root private: {}", err),
+                        ));
+                    }
+                }
+
+                // Bind mount rootfs to itself (required for pivot_root)
+                let rootfs_c = CString::new(rootfs_clone.to_string_lossy().as_bytes()).unwrap();
+                unsafe {
+                    if libc::mount(
+                        rootfs_c.as_ptr(),
+                        rootfs_c.as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_BIND | libc::MS_REC,
+                        std::ptr::null(),
+                    ) != 0
+                    {
+                        let err = std::io::Error::last_os_error();
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("Failed to bind mount rootfs: {}", err),
+                        ));
+                    }
+                }
+
+                // Create put_old directory
                 let old_root = rootfs_clone.join(".pivot_root");
                 if !old_root.exists() {
                     std::fs::create_dir(&old_root)?;
                 }
 
-                crate::filesystem::pivot_root(&rootfs_clone, &old_root)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                // Perform pivot_root
+                crate::filesystem::pivot_root(&rootfs_clone, &old_root).map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("pivot_root failed: {}", e),
+                    )
+                })?;
+
+                // Unmount old root and clean up
+                let old_root_c = CString::new("/.pivot_root").unwrap();
+                unsafe {
+                    libc::umount2(old_root_c.as_ptr(), libc::MNT_DETACH);
+                }
+                let _ = std::fs::remove_dir("/.pivot_root");
+
+                // Mount essential filesystems for container functionality
+                // Mount /proc (required for networking and most system tools)
+                let proc_target = CString::new("/proc").unwrap();
+                let proc_type = CString::new("proc").unwrap();
+                let proc_source = CString::new("proc").unwrap();
+                unsafe {
+                    if libc::mount(
+                        proc_source.as_ptr(),
+                        proc_target.as_ptr(),
+                        proc_type.as_ptr(),
+                        0,
+                        std::ptr::null(),
+                    ) != 0
+                    {
+                        let err = std::io::Error::last_os_error();
+                        // Log but don't fail - /proc might already be mounted
+                        eprintln!("Warning: failed to mount /proc: {}", err);
+                    }
+                }
+
+                // Mount /sys (required for device information)
+                let sys_target = CString::new("/sys").unwrap();
+                let sys_type = CString::new("sysfs").unwrap();
+                let sys_source = CString::new("sysfs").unwrap();
+                unsafe {
+                    if libc::mount(
+                        sys_source.as_ptr(),
+                        sys_target.as_ptr(),
+                        sys_type.as_ptr(),
+                        libc::MS_RDONLY,
+                        std::ptr::null(),
+                    ) != 0
+                    {
+                        let err = std::io::Error::last_os_error();
+                        eprintln!("Warning: failed to mount /sys: {}", err);
+                    }
+                }
+
+                // Mount /dev as tmpfs
+                let dev_target = CString::new("/dev").unwrap();
+                let dev_type = CString::new("tmpfs").unwrap();
+                let dev_source = CString::new("tmpfs").unwrap();
+                let dev_opts = CString::new("mode=755,size=65536k").unwrap();
+                unsafe {
+                    if libc::mount(
+                        dev_source.as_ptr(),
+                        dev_target.as_ptr(),
+                        dev_type.as_ptr(),
+                        libc::MS_NOSUID | libc::MS_STRICTATIME,
+                        dev_opts.as_ptr() as *const libc::c_void,
+                    ) != 0
+                    {
+                        let err = std::io::Error::last_os_error();
+                        eprintln!("Warning: failed to mount /dev: {}", err);
+                    }
+                }
+
+                // Create essential device symlinks
+                let _ = std::os::unix::fs::symlink("/proc/self/fd", "/dev/fd");
+                let _ = std::os::unix::fs::symlink("/proc/self/fd/0", "/dev/stdin");
+                let _ = std::os::unix::fs::symlink("/proc/self/fd/1", "/dev/stdout");
+                let _ = std::os::unix::fs::symlink("/proc/self/fd/2", "/dev/stderr");
 
                 Ok(())
             },
         )?;
 
-        // Parent logic
-        use rustix::fd::IntoRawFd;
-        use std::io::{Read, Write};
-        use std::os::unix::io::FromRawFd;
-        let mut p_read = unsafe { std::fs::File::from_raw_fd(parent_read.into_raw_fd()) };
-        let mut p_write = unsafe { std::fs::File::from_raw_fd(parent_write.into_raw_fd()) };
-
-        // Wait for child unshare
-        let mut buf = [0u8; 8];
-        p_read
-            .read_exact(&mut buf)
+        // Wait for handshake to complete and get the PID
+        let pid = handshake_handle
+            .await
             .map_err(|e| bock_common::BockError::Internal {
-                message: format!("Child failed to sync (read unshared): {}", e),
-            })?;
+                message: format!("Handshake task panicked: {}", e),
+            })??;
 
-        // Write ID mappings
-        if let Some(ns) = &self.namespace {
-            ns.write_uid_map(pid)?;
-            ns.write_gid_map(pid)?;
-        }
+        // Note: child pipe ends were consumed by into_raw_fd() above,
+        // so no explicit drop needed - ownership transferred to child process
 
-        // Network set up (no locks held during await)
-        let host_if = format!(
-            "veth{}",
-            &self.id.as_str()[..std::cmp::min(6, self.id.as_str().len())]
-        );
-        let guest_if = format!(
-            "ceth{}",
-            &self.id.as_str()[..std::cmp::min(6, self.id.as_str().len())]
-        );
-        let veth = VethPair::create(&host_if, &guest_if).await?;
-        veth.move_to_netns(pid).await?;
-
-        // Configure network if specified
-        if let Some(net_config) = &self.network_config {
-            let pid_str = pid.to_string();
-            tracing::debug!(pid = %pid, ip = %net_config.ip, gateway = %net_config.gateway, "Configuring container network");
-
-            // Helper to run command in container namespace via nsenter
-            let run_in_netns = |args: &[&str]| -> BockResult<()> {
-                let status = std::process::Command::new("nsenter")
-                    .arg("-t")
-                    .arg(&pid_str)
-                    .arg("-n")
-                    .args(args)
-                    .status()
-                    .map_err(|e| bock_common::BockError::Internal {
-                        message: format!("Failed to execute nsenter: {}", e),
-                    })?;
-
-                if !status.success() {
-                    return Err(bock_common::BockError::Internal {
-                        message: format!(
-                            "Command in netns failed: {:?} (status: {})",
-                            args, status
-                        ),
-                    });
-                }
-                Ok(())
-            };
-
-            // 1. Bring up loopback
-            run_in_netns(&["ip", "link", "set", "lo", "up"])?;
-
-            // 2. Bring up guest interface
-            run_in_netns(&["ip", "link", "set", &guest_if, "up"])?;
-
-            // 3. Assign IP address
-            run_in_netns(&["ip", "addr", "add", &net_config.ip, "dev", &guest_if])?;
-
-            // 4. Set default gateway
-            run_in_netns(&["ip", "route", "add", "default", "via", &net_config.gateway])?;
-        }
-
-        // Signal child to proceed
-        p_write
-            .write_all(b"DONE")
-            .map_err(|e| bock_common::BockError::Internal {
-                message: format!("Failed to signal child: {}", e),
-            })?;
+        tracing::info!("Container start handshake complete. PID: {}", pid);
 
         tracing::debug!(pid, "Container process spawned and synchronized");
         *self.pid.lock().await = Some(pid);
@@ -845,14 +1040,7 @@ impl Container {
         }
 
         // Cleanup network (no locks held during await)
-        let host_if = format!(
-            "veth{}",
-            &self.id.as_str()[..std::cmp::min(6, self.id.as_str().len())]
-        );
-        let guest_if = format!(
-            "ceth{}",
-            &self.id.as_str()[..std::cmp::min(6, self.id.as_str().len())]
-        );
+        let (host_if, guest_if) = generate_veth_names(self.id.as_str());
         let veth = VethPair {
             host: host_if,
             container: guest_if,

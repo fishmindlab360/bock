@@ -118,6 +118,46 @@ impl Builder {
         let mut current_volumes = self.bockfile.runtime.volumes.clone();
         let mut current_labels = self.bockfile.metadata.labels.clone();
 
+        // Base image handling
+        // If 'from' already contains a tag (e.g., "alpine:3.19"), use it as-is.
+        // Otherwise, append the version or default to "latest".
+        let base_image = if self.bockfile.base.from.contains(':') {
+            self.bockfile.base.from.clone()
+        } else {
+            format!(
+                "{}:{}",
+                self.bockfile.base.from,
+                self.bockfile.base.version.as_deref().unwrap_or("latest")
+            )
+        };
+        tracing::info!(base = %base_image, "Resolving base image");
+
+        let registry = crate::registry::Registry::dockerhub(); // TODO: Support other registries
+        let base_cache = self
+            .cache
+            .cache_dir()
+            .join("base_images")
+            .join(base_image.replace(':', "_"));
+
+        // Pull base image
+        let _image_info = if base_cache.exists() && !self.no_cache {
+            tracing::info!("Using cached base image");
+            crate::registry::inspect_local(&base_cache)?
+        } else {
+            let split: Vec<&str> = base_image.split(':').collect();
+            let mut repo = split[0].to_string();
+            // Normalize Docker Hub official images
+            if !repo.contains('/') {
+                repo = format!("library/{}", repo);
+            }
+            let tag = if split.len() > 1 { split[1] } else { "latest" };
+            registry.pull(&repo, tag, &base_cache).await?
+        };
+
+        // Extract base image layers to rootfs
+        tracing::info!("Extracting base image layers...");
+        self.extract_oci_image(&base_cache, &rootfs)?;
+
         // Build dependency graph and execute stages
         let stages = self.resolve_stages()?;
 
@@ -607,6 +647,74 @@ impl Builder {
         }
 
         Ok(total)
+    }
+
+    /// Extract OCI image to rootfs.
+    fn extract_oci_image(&self, oci_dir: &Path, rootfs: &Path) -> BockResult<()> {
+        tracing::debug!(oci_dir = %oci_dir.display(), rootfs = %rootfs.display(), "Extracting OCI image");
+
+        // Handle OCI layout in 'oci' subdirectory (created by Registry::pull)
+        let layout_dir = if oci_dir.join("oci").join("index.json").exists() {
+            oci_dir.join("oci")
+        } else {
+            oci_dir.to_path_buf()
+        };
+
+        // Read index.json
+        let index_path = layout_dir.join("index.json");
+        if !index_path.exists() {
+            return Err(bock_common::BockError::Config {
+                message: "Missing index.json in OCI image".to_string(),
+            });
+        }
+        let index_bytes = fs::read(&index_path)?;
+        let index: serde_json::Value =
+            serde_json::from_slice(&index_bytes).map_err(|e| bock_common::BockError::Internal {
+                message: format!("Failed to parse index.json: {}", e),
+            })?;
+
+        let manifest_digest = index["manifests"][0]["digest"].as_str().ok_or_else(|| {
+            bock_common::BockError::Config {
+                message: "Invalid index.json".to_string(),
+            }
+        })?;
+
+        // Read Manifest
+        let blobs_dir = layout_dir.join("blobs/sha256");
+        let manifest_path = blobs_dir.join(manifest_digest.trim_start_matches("sha256:"));
+        let manifest_bytes = fs::read(&manifest_path)?;
+        let manifest: crate::registry::ImageManifest = serde_json::from_slice(&manifest_bytes)
+            .map_err(|e| bock_common::BockError::Internal {
+                message: format!("Failed to parse manifest: {}", e),
+            })?;
+
+        // Extract Layers
+        for layer in manifest.layers {
+            let digest = layer.digest;
+            let blob_path = blobs_dir.join(digest.trim_start_matches("sha256:"));
+
+            tracing::debug!(layer = %digest, "Extracting layer");
+
+            let file = fs::File::open(&blob_path).map_err(|e| bock_common::BockError::Io(e))?;
+
+            // Handle different compression types based on mediaType or magic bytes
+            // Docker V2 usually gzip.
+
+            use flate2::read::GzDecoder;
+            use tar::Archive;
+
+            let decoder = GzDecoder::new(file);
+            let mut archive = Archive::new(decoder);
+
+            // Unpack with overwrite
+            archive
+                .unpack(rootfs)
+                .map_err(|e| bock_common::BockError::Internal {
+                    message: format!("Failed to unpack layer {}: {}", digest, e),
+                })?;
+        }
+
+        Ok(())
     }
 }
 

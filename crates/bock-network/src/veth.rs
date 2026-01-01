@@ -13,6 +13,9 @@ pub struct VethPair {
 
 impl VethPair {
     /// Create a new veth pair.
+    ///
+    /// Note: The host interface is NOT brought up automatically.
+    /// Call `bring_host_up()` after attaching to a bridge.
     pub async fn create(host_name: &str, container_name: &str) -> BockResult<Self> {
         tracing::debug!(host_name, container_name, "Creating veth pair");
 
@@ -38,9 +41,20 @@ impl VethPair {
             });
         }
 
-        // Bring host up
+        Ok(Self {
+            host: host_name.to_string(),
+            container: container_name.to_string(),
+        })
+    }
+
+    /// Bring the host-side interface up.
+    ///
+    /// Call this after attaching to a bridge.
+    pub async fn bring_host_up(&self) -> BockResult<()> {
+        tracing::debug!(host = %self.host, "Bringing host interface up");
+
         let status = Command::new("ip")
-            .args(["link", "set", host_name, "up"])
+            .args(["link", "set", &self.host, "up"])
             .status()
             .map_err(|e| bock_common::BockError::Internal {
                 message: format!("Failed to execute ip link set up: {}", e),
@@ -52,10 +66,7 @@ impl VethPair {
             });
         }
 
-        Ok(Self {
-            host: host_name.to_string(),
-            container: container_name.to_string(),
-        })
+        Ok(())
     }
 
     /// Move the container side to a network namespace.

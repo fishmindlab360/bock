@@ -12,7 +12,11 @@ async fn main() -> Result<()> {
 
     tracing_subscriber::registry()
         .with(fmt::layer().with_target(true))
-        .with(EnvFilter::from_default_env().add_directive("bockrose=info".parse()?))
+        .with(
+            EnvFilter::from_default_env()
+                .add_directive("bockrose=info".parse()?)
+                .add_directive("bock=info".parse()?),
+        )
         .init();
 
     let cli = Cli::parse();

@@ -8,12 +8,12 @@ use dashmap::DashMap;
 
 use crate::spec::BockoseSpec;
 use bock::runtime::{Container, ContainerStats, NetworkConfig, RuntimeConfig};
-use bock_image::store::ImageStore;
+use bock_image::store::{ImageConfig, ImageStore};
 use bock_oci::runtime::{Mount, Spec};
 use bock_oci::state::ContainerStatus;
 use bock_runtime::{Bockfile, Builder};
 
-/// Recursively copy a directory.
+/// Recursively copy a directory, handling symlinks.
 fn copy_dir_all(
     src: impl AsRef<std::path::Path>,
     dst: impl AsRef<std::path::Path>,
@@ -22,11 +22,20 @@ fn copy_dir_all(
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let ty = entry.file_type()?;
-        if ty.is_dir() {
-            copy_dir_all(entry.path(), dst.as_ref().join(entry.file_name()))?;
-        } else {
-            std::fs::copy(entry.path(), dst.as_ref().join(entry.file_name()))?;
+        let dest_path = dst.as_ref().join(entry.file_name());
+
+        if ty.is_symlink() {
+            // Recreate symlink
+            let link_target = std::fs::read_link(entry.path())?;
+            // Remove existing if any (to handle overwrites)
+            let _ = std::fs::remove_file(&dest_path);
+            std::os::unix::fs::symlink(&link_target, &dest_path)?;
+        } else if ty.is_dir() {
+            copy_dir_all(entry.path(), &dest_path)?;
+        } else if ty.is_file() {
+            std::fs::copy(entry.path(), &dest_path)?;
         }
+        // Skip other file types (sockets, devices, etc.)
     }
     Ok(())
 }
@@ -102,7 +111,22 @@ impl Orchestrator {
     }
 
     /// Start all services.
-    pub async fn up(&self, _detach: bool) -> BockResult<()> {
+    pub async fn up(&self, detach: bool) -> BockResult<()> {
+        let result = self.up_internal(detach).await;
+
+        if let Err(e) = &result {
+            tracing::error!(error = %e, "Stack startup failed, cleaning up...");
+            // Attempt cleanup
+            if let Err(cleanup_err) = self.down(false).await {
+                tracing::error!(error = %cleanup_err, "Cleanup failed during error recovery");
+            }
+        }
+
+        result
+    }
+
+    /// Internal up logic.
+    async fn up_internal(&self, detach: bool) -> BockResult<()> {
         let stack_name = self.spec.stack_name();
         tracing::info!(stack = %stack_name, "Starting stack");
 
@@ -153,6 +177,17 @@ impl Orchestrator {
         // Start services in dependency order
         for service_name in order {
             self.start_service(&service_name).await?;
+        }
+
+        if !detach {
+            tracing::info!("Stack started. Press Ctrl+C to stop...");
+            // Wait for Ctrl+C
+            if let Err(e) = tokio::signal::ctrl_c().await {
+                tracing::warn!(error = %e, "Failed to listen for Ctrl+C");
+            }
+            // Stop stack
+            println!("Stopping stack...");
+            self.down(false).await?;
         }
 
         Ok(())
@@ -217,16 +252,134 @@ impl Orchestrator {
         let (image_ref, built_rootfs) = self.ensure_image(name, service_spec).await?;
         tracing::debug!(service = %name, image = %image_ref, "Image ready");
 
+        // Retrieve image config to get default CMD
+        let image_cmd = if let Some(stored) = self.image_store.get(&image_ref)? {
+            if let Some(config_blob) = self.image_store.get_blob(&stored.config_digest)? {
+                if let Ok(config) = serde_json::from_slice::<ImageConfig>(&config_blob) {
+                    config.config.cmd
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // 2. Prepare container(s)
         // For now, assume replicas = 1
         // TODO: Merge image config with service spec
         // For now using default spec + simple overrides
         let mut spec = Spec::default();
-        if !service_spec.command.is_empty() {
-            if let Some(process) = &mut spec.process {
+
+        // ENABLE NAMESPACES FOR ISOLATION
+        // Note: PID namespace disabled temporarily - requires double-fork pattern for proper /proc support
+        spec.linux = Some(bock_oci::runtime::Linux {
+            namespaces: vec![
+                bock_oci::runtime::Namespace {
+                    ns_type: bock_oci::runtime::NamespaceType::Network,
+                    path: None,
+                },
+                bock_oci::runtime::Namespace {
+                    ns_type: bock_oci::runtime::NamespaceType::Ipc,
+                    path: None,
+                },
+                bock_oci::runtime::Namespace {
+                    ns_type: bock_oci::runtime::NamespaceType::Uts,
+                    path: None,
+                },
+                bock_oci::runtime::Namespace {
+                    ns_type: bock_oci::runtime::NamespaceType::Mount,
+                    path: None,
+                },
+            ],
+            ..Default::default()
+        });
+
+        // Ensure process config exists
+        if spec.process.is_none() {
+            spec.process = Some(bock_oci::runtime::Process {
+                terminal: false,
+                console_size: None,
+                user: bock_oci::runtime::User::default(),
+                args: vec![],
+                command_line: None,
+                env: vec![],
+                cwd: PathBuf::from("/"),
+                capabilities: None,
+                rlimits: vec![],
+                no_new_privileges: false,
+                apparmor_profile: None,
+                oom_score_adj: None,
+                selinux_label: None,
+            });
+        }
+
+        // Set command from service spec or use default shell
+        if let Some(process) = &mut spec.process {
+            if !service_spec.command.is_empty() {
                 process.args = service_spec.command.clone();
+            } else if let Some(cmd) = image_cmd {
+                process.args = cmd;
+            } else {
+                // Default to sh
+                process.args = vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "while true; do sleep 1; done".to_string(),
+                ];
             }
         }
+
+        // Add essential filesystem mounts (required for networking and system tools)
+        spec.mounts.push(Mount {
+            destination: PathBuf::from("/proc"),
+            mount_type: Some("proc".to_string()),
+            source: Some(PathBuf::from("proc")),
+            options: vec![],
+        });
+        spec.mounts.push(Mount {
+            destination: PathBuf::from("/sys"),
+            mount_type: Some("sysfs".to_string()),
+            source: Some(PathBuf::from("sysfs")),
+            options: vec!["ro".to_string()],
+        });
+        spec.mounts.push(Mount {
+            destination: PathBuf::from("/dev"),
+            mount_type: Some("tmpfs".to_string()),
+            source: Some(PathBuf::from("tmpfs")),
+            options: vec![
+                "nosuid".to_string(),
+                "strictatime".to_string(),
+                "mode=755".to_string(),
+                "size=65536k".to_string(),
+            ],
+        });
+        spec.mounts.push(Mount {
+            destination: PathBuf::from("/dev/pts"),
+            mount_type: Some("devpts".to_string()),
+            source: Some(PathBuf::from("devpts")),
+            options: vec![
+                "nosuid".to_string(),
+                "noexec".to_string(),
+                "newinstance".to_string(),
+                "ptmxmode=0666".to_string(),
+                "mode=0620".to_string(),
+            ],
+        });
+        spec.mounts.push(Mount {
+            destination: PathBuf::from("/dev/shm"),
+            mount_type: Some("tmpfs".to_string()),
+            source: Some(PathBuf::from("shm")),
+            options: vec![
+                "nosuid".to_string(),
+                "noexec".to_string(),
+                "nodev".to_string(),
+                "mode=1777".to_string(),
+                "size=65536k".to_string(),
+            ],
+        });
 
         // Volumes
         for volume in &service_spec.volumes {
@@ -339,12 +492,13 @@ impl Orchestrator {
             let host_octet = self
                 .next_ip
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let ip_cidr = format!("172.18.0.{}/16", host_octet);
-            let gateway = "172.18.0.1".to_string();
+            let ip_cidr = format!("172.20.0.{}/16", host_octet);
+            let gateway = "172.20.0.1".to_string();
 
             let network_config = NetworkConfig {
                 ip: ip_cidr.clone(),
                 gateway,
+                ports: service_spec.ports.clone(),
             };
             container.set_network_config(network_config)?;
 
@@ -618,13 +772,130 @@ impl Orchestrator {
     ) -> BockResult<()> {
         let (image_ref, built_rootfs) = self.ensure_image(name, service_spec).await?;
 
+        // Retrieve image config to get default CMD
+        let image_cmd = if let Some(stored) = self.image_store.get(&image_ref)? {
+            if let Some(config_blob) = self.image_store.get_blob(&stored.config_digest)? {
+                if let Ok(config) = serde_json::from_slice::<ImageConfig>(&config_blob) {
+                    config.config.cmd
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Copied loop from start_service but with explicit 'replicas' count
         let mut spec = Spec::default();
-        if !service_spec.command.is_empty() {
-            if let Some(process) = &mut spec.process {
+
+        // Ensure process config exists
+        if spec.process.is_none() {
+            spec.process = Some(bock_oci::runtime::Process {
+                terminal: false,
+                console_size: None,
+                user: bock_oci::runtime::User::default(),
+                args: vec![],
+                command_line: None,
+                env: vec![],
+                cwd: PathBuf::from("/"),
+                capabilities: None,
+                rlimits: vec![],
+                no_new_privileges: false,
+                apparmor_profile: None,
+                oom_score_adj: None,
+                selinux_label: None,
+            });
+        }
+
+        // ENABLE NAMESPACES FOR ISOLATION
+        // Note: PID namespace disabled temporarily - requires double-fork pattern for proper /proc support
+        spec.linux = Some(bock_oci::runtime::Linux {
+            namespaces: vec![
+                bock_oci::runtime::Namespace {
+                    ns_type: bock_oci::runtime::NamespaceType::Network,
+                    path: None,
+                },
+                bock_oci::runtime::Namespace {
+                    ns_type: bock_oci::runtime::NamespaceType::Ipc,
+                    path: None,
+                },
+                bock_oci::runtime::Namespace {
+                    ns_type: bock_oci::runtime::NamespaceType::Uts,
+                    path: None,
+                },
+                bock_oci::runtime::Namespace {
+                    ns_type: bock_oci::runtime::NamespaceType::Mount,
+                    path: None,
+                },
+            ],
+            ..Default::default()
+        });
+
+        if let Some(process) = &mut spec.process {
+            if !service_spec.command.is_empty() {
                 process.args = service_spec.command.clone();
+            } else if let Some(cmd) = image_cmd {
+                process.args = cmd;
+            } else {
+                // Default to sh
+                process.args = vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "while true; do sleep 1; done".to_string(),
+                ];
             }
         }
+
+        // Add essential filesystem mounts (required for networking and system tools)
+        spec.mounts.push(Mount {
+            destination: PathBuf::from("/proc"),
+            mount_type: Some("proc".to_string()),
+            source: Some(PathBuf::from("proc")),
+            options: vec![],
+        });
+        spec.mounts.push(Mount {
+            destination: PathBuf::from("/sys"),
+            mount_type: Some("sysfs".to_string()),
+            source: Some(PathBuf::from("sysfs")),
+            options: vec!["ro".to_string()],
+        });
+        spec.mounts.push(Mount {
+            destination: PathBuf::from("/dev"),
+            mount_type: Some("tmpfs".to_string()),
+            source: Some(PathBuf::from("tmpfs")),
+            options: vec![
+                "nosuid".to_string(),
+                "strictatime".to_string(),
+                "mode=755".to_string(),
+                "size=65536k".to_string(),
+            ],
+        });
+        spec.mounts.push(Mount {
+            destination: PathBuf::from("/dev/pts"),
+            mount_type: Some("devpts".to_string()),
+            source: Some(PathBuf::from("devpts")),
+            options: vec![
+                "nosuid".to_string(),
+                "noexec".to_string(),
+                "newinstance".to_string(),
+                "ptmxmode=0666".to_string(),
+                "mode=0620".to_string(),
+            ],
+        });
+        spec.mounts.push(Mount {
+            destination: PathBuf::from("/dev/shm"),
+            mount_type: Some("tmpfs".to_string()),
+            source: Some(PathBuf::from("shm")),
+            options: vec![
+                "nosuid".to_string(),
+                "noexec".to_string(),
+                "nodev".to_string(),
+                "mode=1777".to_string(),
+                "size=65536k".to_string(),
+            ],
+        });
 
         // Volumes (copy-paste from start_service or refactor to helper)
         for volume in &service_spec.volumes {
@@ -708,11 +979,12 @@ impl Orchestrator {
             let host_octet = self
                 .next_ip
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let ip_cidr = format!("172.18.0.{}/16", host_octet);
-            let gateway = "172.18.0.1".to_string();
+            let ip_cidr = format!("172.20.0.{}/16", host_octet);
+            let gateway = "172.20.0.1".to_string();
             container.set_network_config(NetworkConfig {
                 ip: ip_cidr.clone(),
                 gateway,
+                ports: service_spec.ports.clone(),
             })?;
 
             if let Some(mut state) = self.services.get_mut(name) {
@@ -839,6 +1111,11 @@ impl Orchestrator {
             .iter()
             .map(|entry| entry.value().clone())
             .collect()
+    }
+
+    /// Get service specification by name.
+    pub fn get_service_spec(&self, name: &str) -> Option<crate::spec::ServiceSpec> {
+        self.spec.services.get(name).cloned()
     }
 
     /// Check health of all services.

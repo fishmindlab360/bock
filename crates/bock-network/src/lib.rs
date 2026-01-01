@@ -9,8 +9,10 @@
 
 pub mod bridge;
 pub mod dns;
+pub mod ipam;
 pub mod ipv6;
 pub mod modes;
+pub mod nat;
 pub mod netns;
 pub mod policy;
 pub mod portmap;
@@ -18,8 +20,10 @@ pub mod veth;
 
 pub use bridge::BridgeManager;
 pub use dns::{ContainerDns, DnsRecord};
+pub use ipam::IpAllocator;
 pub use ipv6::{Ipv6Config, configure_interface_ipv6, enable_ipv6_forwarding};
 pub use modes::{IpvlanMode, MacvlanMode, NetworkDriver, create_ipvlan, create_macvlan};
+pub use nat::{DEFAULT_BRIDGE, DEFAULT_GATEWAY, DEFAULT_SUBNET, NatManager};
 pub use netns::{
     create_netns, delete_netns, enter_netns, enter_netns_by_pid, list_netns, netns_exists,
 };
