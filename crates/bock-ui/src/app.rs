@@ -25,6 +25,19 @@ pub struct ContainerInfo {
     pub ports: String,
 }
 
+/// Image information for display.
+#[derive(Debug, Clone)]
+pub struct ImageInfo {
+    /// Image ID (short digest).
+    pub id: String,
+    /// Image reference (name:tag).
+    pub reference: String,
+    /// Size string.
+    pub size: String,
+    /// Created date.
+    pub created: String,
+}
+
 /// Active screen in the application.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Screen {
@@ -76,6 +89,8 @@ pub struct BockApp {
     orchestrator: Option<Arc<Orchestrator>>,
     /// List of containers.
     containers: Vec<ContainerInfo>,
+    /// List of images.
+    images: Vec<ImageInfo>,
     /// Loading state.
     loading: bool,
     /// Error message.
@@ -94,6 +109,8 @@ pub enum Message {
     OrchestratorLoaded(Result<Arc<Orchestrator>, String>),
     /// Containers loaded.
     ContainersLoaded(Result<Vec<ContainerInfo>, String>),
+    /// Images loaded.
+    ImagesLoaded(Result<Vec<ImageInfo>, String>),
     /// Error occurred.
     Error(String),
     /// Start a container (not implemented yet).
@@ -131,7 +148,15 @@ impl BockApp {
                 self.loading = true;
                 self.error = None;
                 if let Some(orch) = &self.orchestrator {
-                    Task::perform(refresh_containers(orch.clone()), Message::ContainersLoaded)
+                    match self.screen {
+                        Screen::Images => {
+                            Task::perform(refresh_images(orch.clone()), Message::ImagesLoaded)
+                        }
+                        _ => Task::perform(
+                            refresh_containers(orch.clone()),
+                            Message::ContainersLoaded,
+                        ),
+                    }
                 } else {
                     // Try to init again
                     Task::perform(init_orchestrator(), Message::OrchestratorLoaded)
@@ -154,6 +179,17 @@ impl BockApp {
                 match result {
                     Ok(containers) => {
                         self.containers = containers;
+                        self.error = None;
+                    }
+                    Err(e) => self.error = Some(e),
+                }
+                Task::none()
+            }
+            Message::ImagesLoaded(result) => {
+                self.loading = false;
+                match result {
+                    Ok(images) => {
+                        self.images = images;
                         self.error = None;
                     }
                     Err(e) => self.error = Some(e),
@@ -189,7 +225,7 @@ impl BockApp {
         let sidebar = self.view_sidebar();
         let content = match self.screen {
             Screen::Dashboard => self.view_dashboard(),
-            Screen::Images => self.view_placeholder("Images"),
+            Screen::Images => self.view_images(),
             Screen::Networks => self.view_placeholder("Networks"),
             Screen::Volumes => self.view_placeholder("Volumes"),
             Screen::Settings => self.view_placeholder("Settings"),
@@ -322,7 +358,7 @@ impl BockApp {
 
         let info = column![text(name.clone()).size(16), text(image).size(12),].spacing(4);
 
-        let status = row![status_dot, text(status_str).size(12)].spacing(sizes::SPACING_SM);
+        let status = row![status_dot, text(status_str.clone()).size(12)].spacing(sizes::SPACING_SM);
 
         let actions = match status_str.to_lowercase().as_str() {
             "running" => row![
@@ -346,6 +382,72 @@ impl BockApp {
         container(card_content)
             .width(Length::Fill)
             .padding(sizes::CARD_PADDING)
+            .into()
+    }
+
+    /// Render the images screen.
+    fn view_images(&self) -> Element<'_, Message> {
+        let header = row![
+            text("Images").size(24),
+            iced::widget::horizontal_space(),
+            button(text("↻ Refresh").size(14))
+                .padding(sizes::SPACING_SM)
+                .on_press(Message::Refresh)
+        ]
+        .spacing(sizes::SPACING);
+
+        let content: Element<Message> = if self.loading && self.images.is_empty() {
+            container(text("Loading...").size(16))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into()
+        } else if let Some(ref error) = self.error {
+            container(text(format!("Error: {}", error)).size(14))
+                .center_x(Length::Fill)
+                .into()
+        } else if self.images.is_empty() {
+            container(text("No images found").size(16))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into()
+        } else {
+            let cards: Vec<Element<Message>> = self
+                .images
+                .iter()
+                .map(|img| {
+                    let info = column![
+                        text(&img.reference).size(16),
+                        text(format!("ID: {}", img.id))
+                            .size(12)
+                            .style(crate::theme::text_secondary),
+                        text(format!("Created: {}", img.created))
+                            .size(12)
+                            .style(crate::theme::text_secondary),
+                    ]
+                    .spacing(4);
+
+                    let size = text(&img.size).size(14);
+
+                    container(
+                        row![info, iced::widget::horizontal_space(), size]
+                            .align_y(iced::Alignment::Center)
+                            .padding(sizes::CARD_PADDING),
+                    )
+                    .style(crate::theme::card)
+                    .width(Length::Fill)
+                    .into()
+                })
+                .collect();
+
+            scrollable(column(cards).spacing(sizes::SPACING))
+                .height(Length::Fill)
+                .into()
+        };
+
+        column![header, content]
+            .spacing(sizes::SPACING_LG)
+            .width(Length::Fill)
+            .height(Length::Fill)
             .into()
     }
 
@@ -434,6 +536,33 @@ async fn refresh_containers(orchestrator: Arc<Orchestrator>) -> Result<Vec<Conta
     infos.sort_by(|a, b| a.name.cmp(&b.name));
 
     Ok(infos)
+}
+
+/// Refresh images from orchestrator.
+async fn refresh_images(orchestrator: Arc<Orchestrator>) -> Result<Vec<ImageInfo>, String> {
+    let images = orchestrator.list_images().map_err(|e| e.to_string())?;
+
+    let info = images
+        .into_iter()
+        .map(|img| {
+            let size_mb = img.size as f64 / 1024.0 / 1024.0;
+            let size = format!("{:.2} MB", size_mb);
+            let id = if img.digest.len() > 12 {
+                img.digest[7..19].to_string()
+            } else {
+                img.digest
+            };
+
+            ImageInfo {
+                id,
+                reference: img.reference,
+                size,
+                created: img.created.unwrap_or_else(|| "Unknown".to_string()),
+            }
+        })
+        .collect();
+
+    Ok(info)
 }
 
 /// Stop a container service.

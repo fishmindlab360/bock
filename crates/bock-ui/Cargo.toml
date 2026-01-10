@@ -39,6 +39,7 @@ chrono.workspace = true
 bockrose = { path = "../bockrose" }
 bock = { path = "../bock" }
 bock-common = { path = "../bock-common" }
+bock-image = { path = "../bock-image" }
 
 [lints]
 workspace = true

@@ -81,3 +81,27 @@ pub mod sizes {
     /// Icon size.
     pub const ICON_SIZE: u16 = 20;
 }
+
+use iced::Theme;
+use iced::widget::{container, text};
+
+/// Secondary text style.
+pub fn text_secondary(_theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(colors::TEXT_SECONDARY),
+    }
+}
+
+/// Card container style.
+pub fn card(_theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(colors::CARD.into()),
+        text_color: Some(colors::TEXT_PRIMARY),
+        border: iced::Border {
+            color: colors::BORDER,
+            width: 1.0,
+            radius: sizes::BORDER_RADIUS.into(),
+        },
+        ..Default::default()
+    }
+}

@@ -119,6 +119,11 @@ impl Orchestrator {
         })
     }
 
+    /// List all stored images.
+    pub fn list_images(&self) -> BockResult<Vec<bock_image::store::StoredImage>> {
+        self.image_store.list()
+    }
+
     /// Start all services.
     pub async fn up(&self, detach: bool) -> BockResult<()> {
         let result = self.up_internal(detach).await;
