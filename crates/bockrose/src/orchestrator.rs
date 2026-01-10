@@ -95,6 +95,15 @@ pub struct Orchestrator {
     next_ip: std::sync::atomic::AtomicU8,
 }
 
+impl std::fmt::Debug for Orchestrator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Orchestrator")
+            .field("spec", &self.spec)
+            .field("services", &self.services)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Orchestrator {
     /// Create a new orchestrator.
     pub fn new(spec: BockoseSpec) -> BockResult<Self> {
